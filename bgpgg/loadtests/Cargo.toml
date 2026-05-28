@@ -4,8 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-bgpgg = { path = "../core", package = "core" }
-conf = { path = "../conf" }
+bgpgg = { path = ".." }
+conf = { path = "../../conf" }
 tokio.workspace = true
 tokio-stream = "0.1"
 tonic.workspace = true

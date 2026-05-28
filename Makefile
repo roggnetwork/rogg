@@ -16,7 +16,7 @@ build-docker: build
 ifndef version
 	$(error version is required. Usage: make build-docker version=v0.1.0 [platform=linux/amd64])
 endif
-	./docker/build.sh $(version) $(platform)
+	./bgpgg/docker/build.sh $(version) $(platform)
 
 clean:
 	cargo clean

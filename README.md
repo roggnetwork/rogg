@@ -1,15 +1,14 @@
-# bgpgg
+# rogg
 
-A BGP router written in Rust, designed for speed and observability.
+A memory-safe, fast, programmable routing stack written in Rust. Currently implements BGP (bgpgg).
 
 ## Get Started
 
-Download the [latest release](https://github.com/bgpgg-org/bgpgg/releases/latest) for your platform.
+Download the [latest release](https://github.com/roggnetwork/rogg/releases/latest) for your platform.
 
 ```bash
-# Example for v0.2.0 on Linux x86_64
-curl -LO https://github.com/bgpgg-org/bgpgg/releases/download/v0.2.0/bgpgg-v0.2.0-x86_64-linux.tar.gz
-tar xzf bgpgg-v0.2.0-x86_64-linux.tar.gz
+curl -LO https://github.com/roggnetwork/rogg/releases/download/<version>/rogg-<version>-x86_64-linux.tar.gz
+tar xzf rogg-<version>-x86_64-linux.tar.gz
 ```
 
 Create a config file:
@@ -34,7 +33,7 @@ Start the daemon:
 ./bgpggd --config rogg.conf
 ```
 
-Use ggsh (gg shell) to manage it:
+Use **ggsh** (the gg shell) to manage it:
 
 ```
 $ ggsh
@@ -66,7 +65,7 @@ make
 ## Docker
 
 ```bash
-curl -LO https://raw.githubusercontent.com/bgpgg-org/bgpgg/master/docker/docker-compose.yml
+curl -LO https://raw.githubusercontent.com/roggnetwork/rogg/master/bgpgg/docker/docker-compose.yml
 docker compose up -d
-docker exec bgpgg1 ggsh show bgp summary
+docker exec rogg1 ggsh show bgp summary
 ```

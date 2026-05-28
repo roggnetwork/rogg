@@ -476,7 +476,7 @@ impl BgpggProcess {
         config_file.write_all(config.to_conf_str().as_bytes())?;
         config_file.flush()?;
 
-        let mut command = Command::new("../target/release/bgpggd");
+        let mut command = Command::new("../../target/release/bgpggd");
         command
             .arg("--config")
             .arg(config_file.path())

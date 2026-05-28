@@ -27,10 +27,10 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 if [ "$FROM" = true ]; then
     rsync -av --exclude target/ --exclude .git/ \
-        "${REMOTE}:~/bgpgg/" \
+        "${REMOTE}:~/rogg/" \
         "$REPO_ROOT/"
 else
     rsync -av --exclude target/ --exclude .git/ \
         "$REPO_ROOT/" \
-        "${REMOTE}:~/bgpgg/"
+        "${REMOTE}:~/rogg/"
 fi

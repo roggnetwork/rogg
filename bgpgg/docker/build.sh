@@ -31,7 +31,7 @@ else
 fi
 
 SCRIPT_DIR=$(dirname "${BASH_SOURCE[0]}")
-PROJECT_DIR="$SCRIPT_DIR/.."
+PROJECT_DIR="$SCRIPT_DIR/../.."
 RELEASE_DIR="$PROJECT_DIR/release/$VERSION"
 
 # Determine which tarballs are needed based on platforms
@@ -52,7 +52,7 @@ fi
 # Verify required tarballs exist
 MISSING=()
 for arch in "${TARBALLS_NEEDED[@]}"; do
-  if [ ! -f "$RELEASE_DIR/bgpgg-$VERSION-$arch.tar.gz" ]; then
+  if [ ! -f "$RELEASE_DIR/rogg-$VERSION-$arch.tar.gz" ]; then
     MISSING+=("$arch")
   fi
 done
@@ -60,9 +60,9 @@ done
 if [ ${#MISSING[@]} -gt 0 ]; then
   echo "Error: Missing release tarballs in $RELEASE_DIR:"
   for arch in "${MISSING[@]}"; do
-    echo "  - bgpgg-$VERSION-$arch.tar.gz"
+    echo "  - rogg-$VERSION-$arch.tar.gz"
   done
-  echo "Run ./script/release.sh $VERSION [target] first"
+  echo "Run ./script/build.sh $VERSION [target] first"
   exit 1
 fi
 
@@ -73,7 +73,7 @@ trap "rm -rf $BUILD_CONTEXT" EXIT
 # Copy Dockerfile and required tarballs to build context
 cp "$SCRIPT_DIR/Dockerfile" "$BUILD_CONTEXT/"
 for arch in "${TARBALLS_NEEDED[@]}"; do
-  cp "$RELEASE_DIR/bgpgg-$VERSION-$arch.tar.gz" "$BUILD_CONTEXT/"
+  cp "$RELEASE_DIR/rogg-$VERSION-$arch.tar.gz" "$BUILD_CONTEXT/"
 done
 
 # Count platforms (check for comma)
@@ -93,8 +93,8 @@ if [[ "$PLATFORM" == *","* ]]; then
 
   docker buildx build \
     --platform "$PLATFORM" \
-    -t bgpgg/bgpgg:"$VERSION" \
-    -t bgpgg/bgpgg:latest \
+    -t roggnetwork/bgpgg:"$VERSION" \
+    -t roggnetwork/bgpgg:latest \
     --build-arg VERSION="$VERSION" \
     "$BUILD_CONTEXT"
 
@@ -106,8 +106,8 @@ else
 
   docker buildx build \
     --platform "$PLATFORM" \
-    -t bgpgg/bgpgg:"$VERSION" \
-    -t bgpgg/bgpgg:latest \
+    -t roggnetwork/bgpgg:"$VERSION" \
+    -t roggnetwork/bgpgg:latest \
     --build-arg VERSION="$VERSION" \
     --load \
     "$BUILD_CONTEXT"
@@ -116,5 +116,5 @@ fi
 echo ""
 echo "Build complete!"
 if [[ "$PLATFORM" != *","* ]]; then
-  echo "Test with: docker run --rm bgpgg/bgpgg:$VERSION ./bgpggd --version"
+  echo "Test with: docker run --rm roggnetwork/bgpgg:$VERSION ./bgpggd --version"
 fi

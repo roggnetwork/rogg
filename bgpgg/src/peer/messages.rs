@@ -145,12 +145,10 @@ fn extract_capabilities(open_msg: &OpenMessage) -> PeerCapabilities {
             BgpCapabiltyCode::RouteRefresh => {
                 capabilities.route_refresh = true;
             }
-            BgpCapabiltyCode::FourOctetAsn => {
-                // RFC 6793: Parse 4-byte ASN from capability value
-                if cap.val.len() == 4 {
-                    let asn = u32::from_be_bytes([cap.val[0], cap.val[1], cap.val[2], cap.val[3]]);
-                    capabilities.four_octet_asn = Some(asn);
-                }
+            BgpCapabiltyCode::FourOctetAsn if cap.val.len() == 4 => {
+                // RFC 6793: 4-byte ASN value
+                let asn = u32::from_be_bytes([cap.val[0], cap.val[1], cap.val[2], cap.val[3]]);
+                capabilities.four_octet_asn = Some(asn);
             }
             BgpCapabiltyCode::GracefulRestart => {
                 // RFC 4724: Parse Graceful Restart capability

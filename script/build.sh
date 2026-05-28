@@ -32,7 +32,7 @@ build_and_package() {
     fi
 
     # Package
-    ARCHIVE_NAME="bgpgg-$VERSION-$PLATFORM"
+    ARCHIVE_NAME="rogg-$VERSION-$PLATFORM"
     ARCHIVE_FILE="$RELEASE_DIR/$ARCHIVE_NAME.tar.gz"
 
     mkdir -p "$ARCHIVE_NAME"

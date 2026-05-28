@@ -8,7 +8,7 @@ name = "ggsh"
 path = "src/main.rs"
 
 [dependencies]
-core = { path = "../core" }
+bgpgg = { path = "../bgpgg" }
 conf = { path = "../conf" }
 tokio.workspace = true
 tonic.workspace = true
