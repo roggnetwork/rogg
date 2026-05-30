@@ -649,10 +649,7 @@ impl Peer {
         let local_send = !matches!(self.config.add_path_send, AddPathSend::Disabled);
         let local_receive = self.config.add_path_receive;
 
-        let peer_add_path = match &peer_caps.add_path {
-            Some(ap) => ap,
-            None => return None,
-        };
+        let peer_add_path = peer_caps.add_path.as_ref()?;
 
         if !local_send && !local_receive {
             return None;

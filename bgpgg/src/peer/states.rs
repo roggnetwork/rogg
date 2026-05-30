@@ -230,6 +230,12 @@ impl Peer {
     ) {
         debug!(peer_ip = %self.addr, "TcpConnectionAccepted");
         self.conn = Some(TcpConnection::new(tcp_tx, tcp_rx));
+        self.connection_ready().await;
+    }
+
+    /// A TCP connection is in place (accepted, dialed, or attached at spawn):
+    /// stop ConnectRetryTimer, then start DelayOpen or send OPEN.
+    pub(super) async fn connection_ready(&mut self) {
         self.fsm.timers.stop_connect_retry();
         if self.config.delay_open_time_secs.is_some() {
             self.fsm.timers.start_delay_open_timer();

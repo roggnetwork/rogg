@@ -288,10 +288,7 @@ impl<K: Prefix, V> PrefixTrie<K, V> {
 
             // Key is more specific, descend
             let next = key.bit_at(node.prefix.prefix_len());
-            match node.children[next as usize] {
-                Some(child) => current = child,
-                None => return None,
-            }
+            current = node.children[next as usize]?;
         }
     }
 

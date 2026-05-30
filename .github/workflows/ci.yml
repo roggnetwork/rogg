@@ -57,6 +57,9 @@ jobs:
         prepare: |
           ./script/setup-freebsd.sh
         run: |
+          # FreeBSD runs under QEMU here, so each "vCPU" is much slower than
+          # native. Parallel tests starve each other and time out -- run serially.
+          export RUST_TEST_THREADS=1
           gmake test
           gmake systest
           gmake systest-ggsh

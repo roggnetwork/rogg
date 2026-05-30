@@ -613,8 +613,12 @@ pub async fn start_test_server(mut config: BgpConfig) -> TestServer {
     let loaded_config = server.config.clone();
     let grpc_service = BgpGrpcService::new(server.mgmt_tx.clone());
 
-    // Create a separate runtime for this server (simulates separate process)
+    // Each server gets its own runtime to simulate a separate process. Worker
+    // count is capped because cargo runs tests in parallel and each test spins
+    // up several servers -- the default (one worker per core, per runtime)
+    // would land us with hundreds of threads fighting for the same CPUs.
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
         .enable_all()
         .build()
         .unwrap();
@@ -1205,13 +1209,16 @@ where
     panic!("{}", timeout_message);
 }
 
-/// Generic polling helper that retries until a condition is met (default 10s timeout)
+/// Generic polling helper that retries until a condition is met (default 60s timeout).
+/// Generous because the FreeBSD VM in CI runs slower than dev machines. Tests
+/// that need a tighter bound (timer correctness, etc.) should call
+/// `poll_until_with_timeout` directly.
 pub async fn poll_until<F, Fut>(check: F, timeout_message: &str)
 where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = bool>,
 {
-    poll_until_with_timeout(check, timeout_message, Duration::from_secs(10)).await;
+    poll_until_with_timeout(check, timeout_message, Duration::from_secs(60)).await;
 }
 
 /// Poll to verify a condition stays true for a duration.

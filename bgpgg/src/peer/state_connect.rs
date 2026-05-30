@@ -29,16 +29,9 @@ impl Peer {
         if self.fsm.timers.delay_open_timer_running() {
             self.handle_connect_delay_open_wait().await;
         } else if self.conn.is_some() {
-            // Have connection, start DelayOpen or transition to OpenSent
-            if self.config.delay_open_time_secs.is_some() {
-                self.fsm.timers.start_delay_open_timer();
-            } else if let Err(e) = self.process_event(&FsmEvent::TcpConnectionConfirmed).await {
-                error!(peer_ip = %self.addr, error = %e, "failed to send OPEN");
-                self.disconnect(
-                    true,
-                    PeerDownReason::LocalNoNotification(FsmEvent::TcpConnectionConfirmed),
-                );
-            }
+            // Have connection (attached at spawn for incoming peers), start
+            // DelayOpen or transition to OpenSent
+            self.connection_ready().await;
         } else {
             // No connection - first check if incoming connection is already queued
             if let Ok(op) = self.peer_rx.try_recv() {
@@ -83,14 +76,7 @@ impl Peer {
                             info!(peer_ip = %self.addr, "TCP connection established");
                             let (rx, tx) = stream.into_split();
                             self.conn = Some(TcpConnection::new(tx, rx));
-                            self.fsm.timers.stop_connect_retry();
-
-                            if self.config.delay_open_time_secs.is_some() {
-                                self.fsm.timers.start_delay_open_timer();
-                            } else if let Err(e) = self.process_event(&FsmEvent::TcpConnectionConfirmed).await {
-                                error!(peer_ip = %self.addr, error = %e, "failed to send OPEN");
-                                self.disconnect(true, PeerDownReason::LocalNoNotification(FsmEvent::TcpConnectionConfirmed));
-                            }
+                            self.connection_ready().await;
                         }
                         Err(e) => {
                             debug!(peer_ip = %self.addr, error = %e, "TCP connection failed");

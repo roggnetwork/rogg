@@ -499,6 +499,13 @@ impl Peer {
         }
     }
 
+    /// Attach an accepted TCP connection before the task is spawned.
+    /// Sending the stream through the channel instead would race against the
+    /// task's outbound connect attempt in Connect state.
+    pub(crate) fn set_initial_connection(&mut self, tcp_tx: OwnedWriteHalf, tcp_rx: OwnedReadHalf) {
+        self.conn = Some(TcpConnection::new(tcp_tx, tcp_rx));
+    }
+
     fn pending_route_count(&self) -> usize {
         self.pending_routes.len()
     }
@@ -661,7 +668,21 @@ impl Peer {
         self.fsm.timers.stop_delay_open_timer();
 
         if had_connection {
-            if apply_damping {
+            // Connection-collision rejection is normal protocol behavior, not
+            // peer oscillation -- skip damping so the loser reconnects on its
+            // normal idle-hold deadline instead of the doubled backoff.
+            let is_collision = matches!(
+                &reason,
+                PeerDownReason::RemoteNotification(n)
+                    if matches!(
+                        n.error(),
+                        BgpError::Cease(
+                            CeaseSubcode::ConnectionRejected
+                                | CeaseSubcode::ConnectionCollisionResolution
+                        )
+                    )
+            );
+            if apply_damping && !is_collision {
                 self.consecutive_down_count += 1;
             }
 

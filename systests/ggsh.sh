@@ -51,12 +51,15 @@ poll_until() {
 P1_GRPC=http://127.0.0.1:50081
 P2_GRPC=http://127.0.0.2:50082
 
+# Short connect-retry: loser of TCP collision otherwise waits 30s
+# (BGP default), racing the script's 30s poll below.
 cat > "$TMPDIR/peer1.conf" <<'EOF'
 service bgp {
   asn 65001
   router-id 1.1.1.1
   listen-addr 127.0.0.1:14179
   grpc-listen-addr 127.0.0.1:50081
+  connect-retry 1
 }
 EOF
 
@@ -66,6 +69,7 @@ service bgp {
   router-id 2.2.2.2
   listen-addr 127.0.0.2:14179
   grpc-listen-addr 127.0.0.2:50082
+  connect-retry 1
 }
 EOF
 
