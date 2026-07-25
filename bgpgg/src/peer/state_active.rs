@@ -26,6 +26,10 @@ impl Peer {
     pub(super) async fn handle_active_state(&mut self) {
         if self.fsm.timers.delay_open_timer_running() {
             self.handle_active_delay_open_wait().await;
+        } else if self.conn.is_some() {
+            // Connection attached at spawn (passive incoming peer), start
+            // DelayOpen or transition to OpenSent
+            self.connection_ready().await;
         } else {
             let retry_time = Duration::from_secs(self.connect_retry_secs);
 

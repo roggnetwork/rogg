@@ -134,11 +134,11 @@ jobs:
       - name: Prepare Docker build context
         run: |
           mkdir -p /tmp/docker-build
-          cp docker/Dockerfile /tmp/docker-build/
-          cp release/$VERSION/bgpgg-$VERSION-x86_64-linux.tar.gz /tmp/docker-build/
-          cp release/$VERSION/bgpgg-$VERSION-aarch64-linux.tar.gz /tmp/docker-build/
-          cp release/$VERSION/bgpgg-$VERSION-armv7-linux.tar.gz /tmp/docker-build/
-          cp release/$VERSION/bgpgg-$VERSION-i686-linux.tar.gz /tmp/docker-build/
+          cp bgpgg/docker/Dockerfile /tmp/docker-build/
+          cp release/$VERSION/rogg-$VERSION-x86_64-linux.tar.gz /tmp/docker-build/
+          cp release/$VERSION/rogg-$VERSION-aarch64-linux.tar.gz /tmp/docker-build/
+          cp release/$VERSION/rogg-$VERSION-armv7-linux.tar.gz /tmp/docker-build/
+          cp release/$VERSION/rogg-$VERSION-i686-linux.tar.gz /tmp/docker-build/
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -146,7 +146,7 @@ jobs:
           context: /tmp/docker-build
           push: true
           platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/386
-          tags: ${{ env.IS_NIGHTLY == 'true' && format('bgpgg/bgpgg:{0}', env.VERSION) || format('bgpgg/bgpgg:{0},bgpgg/bgpgg:latest', env.VERSION) }}
+          tags: ${{ env.IS_NIGHTLY == 'true' && format('roggnetwork/bgpgg:{0}', env.VERSION) || format('roggnetwork/bgpgg:{0},roggnetwork/bgpgg:latest', env.VERSION) }}
           build-args: VERSION=${{ env.VERSION }}
 
       - name: Delete previous nightly release

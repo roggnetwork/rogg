@@ -1383,7 +1383,7 @@ impl BgpServer {
             cluster_id: self.config.cluster_id(),
             llgr,
         };
-        let peer = Peer::new(
+        let mut peer = Peer::new(
             peer_ip,
             config.port,
             peer_rx,
@@ -1394,22 +1394,25 @@ impl BgpServer {
             ConnectionType::Incoming,
         );
 
-        tokio::spawn(async move {
-            peer.run().await;
-        });
-
-        // RFC 4271 8.2.2: Send start event only if AllowAutomaticStart is true
-        // If false, FSM stays in Idle and will refuse the connection per RFC 4271 8.2.2
+        // RFC 4271 8.2.2: Start the FSM only if AllowAutomaticStart is true.
+        // The accepted connection is attached before spawning the task; sending
+        // it as a PeerOp instead would race against the task's own outbound
+        // connect attempt in Connect state, which could drop the stream.
         if config.allow_automatic_start() {
+            peer.set_initial_connection(tcp_tx, tcp_rx);
             if config.passive_mode {
                 let _ = peer_tx.send(PeerOp::AutomaticStartPassive);
             } else {
                 let _ = peer_tx.send(PeerOp::AutomaticStart);
             }
+        } else {
+            // FSM stays in Idle and will refuse the connection per RFC 4271 8.2.2
+            let _ = peer_tx.send(PeerOp::TcpConnectionAccepted { tcp_tx, tcp_rx });
         }
 
-        // Always send TCP connection - let FSM decide what to do with it
-        let _ = peer_tx.send(PeerOp::TcpConnectionAccepted { tcp_tx, tcp_rx });
+        tokio::spawn(async move {
+            peer.run().await;
+        });
     }
 
     /// Spawn a BMP task for a destination

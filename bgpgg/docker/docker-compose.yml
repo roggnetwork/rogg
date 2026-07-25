@@ -1,7 +1,7 @@
 services:
   speaker1:
-    image: bgpgg/bgpgg:latest
-    container_name: bgpgg1
+    image: roggnetwork/bgpgg:latest
+    container_name: rogg1
     configs:
       - source: speaker1_config
         target: /etc/rogg/rogg.conf
@@ -10,8 +10,8 @@ services:
         ipv4_address: 172.20.0.10
 
   speaker2:
-    image: bgpgg/bgpgg:latest
-    container_name: bgpgg2
+    image: roggnetwork/bgpgg:latest
+    container_name: rogg2
     configs:
       - source: speaker2_config
         target: /etc/rogg/rogg.conf

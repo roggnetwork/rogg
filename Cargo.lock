@@ -280,6 +280,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "bgpgg"
+version = "0.4.0"
+dependencies = [
+ "clap",
+ "conf",
+ "libc",
+ "prost",
+ "regex",
+ "russh",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-build",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -509,27 +531,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
-name = "core"
-version = "0.4.0"
-dependencies = [
- "conf",
- "libc",
- "prost",
- "regex",
- "russh",
- "serde",
- "serde_json",
- "serde_yaml",
- "tokio",
- "tokio-stream",
- "tonic",
- "tonic-build",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -671,21 +672,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "daemon"
-version = "0.4.0"
-dependencies = [
- "clap",
- "conf",
- "core",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tonic",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -1087,8 +1073,8 @@ dependencies = [
 name = "ggsh"
 version = "0.4.0"
 dependencies = [
+ "bgpgg",
  "conf",
- "core",
  "libc",
  "prost",
  "rustyline",
@@ -1588,8 +1574,8 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 name = "loadtests"
 version = "0.4.0"
 dependencies = [
+ "bgpgg",
  "conf",
- "core",
  "libc",
  "prost",
  "rand 0.8.6",

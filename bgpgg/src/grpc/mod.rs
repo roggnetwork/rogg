@@ -20,7 +20,7 @@ pub mod service;
 
 // Include generated protobuf code
 pub mod proto {
-    tonic::include_proto!("bgp");
+    tonic::include_proto!("bgpgg");
 }
 
 pub use client::BgpClient;

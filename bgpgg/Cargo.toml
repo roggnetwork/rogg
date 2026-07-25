@@ -1,18 +1,24 @@
 [package]
-name = "core"
+name = "bgpgg"
 version.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "bgpggd"
+path = "src/bin/bgpggd.rs"
+
 [dependencies]
 tokio.workspace = true
+tokio-stream = "0.1"
 tonic.workspace = true
 prost.workspace = true
+clap.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true
 serde_json.workspace = true
 regex.workspace = true
 tracing.workspace = true
-tokio-stream = "0.1"
+tracing-subscriber.workspace = true
 libc = "0.2"
 conf = { path = "../conf" }
 russh = "0.58"
@@ -23,7 +29,3 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [build-dependencies]
 tonic-build = "0.12"
-
-[lib]
-name = "bgpgg"
-path = "src/lib.rs"
