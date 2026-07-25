@@ -105,6 +105,8 @@ async fn test_prometheus_scrape() {
         "\
 # TYPE bgpgg_peer_count gauge
 bgpgg_peer_count 1
+# TYPE bgpgg_session_state gauge
+bgpgg_session_state{{peer=\"127.0.0.2\"}} 6
 # TYPE bgpgg_session_uptime_seconds gauge
 bgpgg_session_uptime_seconds{{peer=\"127.0.0.2\"}} X
 # TYPE bgpgg_loc_rib_route_count gauge

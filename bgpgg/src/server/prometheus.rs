@@ -143,6 +143,18 @@ fn build_families(
     )];
 
     families.push(gauge(
+        prometheus_name(metrics::SESSION_STATE),
+        snapshot
+            .peers
+            .iter()
+            .map(|peer| Sample {
+                labels: vec![peer_label(&peer.peer_ip)],
+                value: peer.state.code() as f64,
+            })
+            .collect(),
+    ));
+
+    families.push(gauge(
         prometheus_name(metrics::SESSION_UPTIME_SECONDS),
         snapshot
             .peers
@@ -271,6 +283,7 @@ fn build_families(
 mod tests {
     use super::*;
     use crate::bgp::multiprotocol::{Afi, Safi};
+    use crate::peer::BgpState;
     use telemetry::prometheus::render;
 
     #[test]
@@ -281,6 +294,7 @@ mod tests {
             peer_total: 1,
             peers: vec![PeerMetricsSnapshot {
                 peer_ip,
+                state: BgpState::Established,
                 uptime_secs: Some(30),
                 adj_rib_in_total: 5,
                 adj_rib_out_total: 2,
@@ -308,6 +322,8 @@ mod tests {
             "\
 # TYPE bgpgg_peer_count gauge
 bgpgg_peer_count 1
+# TYPE bgpgg_session_state gauge
+bgpgg_session_state{peer=\"10.0.0.1\"} 6
 # TYPE bgpgg_session_uptime_seconds gauge
 bgpgg_session_uptime_seconds{peer=\"10.0.0.1\"} 30
 # TYPE bgpgg_loc_rib_route_count gauge

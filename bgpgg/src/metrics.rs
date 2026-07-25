@@ -36,6 +36,10 @@ pub const CONFIG_RELOAD_FAILURE_COUNT: &str = "config_reload_failure_count";
 
 // Periodic gauges: emitted by the server task on a timer.
 pub const PEER_COUNT: &str = "peer_count";
+/// FSM state code per peer, RFC 4271 numbering: 1=Idle, 2=Connect,
+/// 3=Active, 4=OpenSent, 5=OpenConfirm, 6=Established. No unit suffix;
+/// the value is a code, not a quantity.
+pub const SESSION_STATE: &str = "session_state";
 pub const SESSION_UPTIME_SECONDS: &str = "session_uptime_seconds";
 pub const LOC_RIB_ROUTE_COUNT: &str = "loc_rib_route_count";
 pub const ADJ_RIB_IN_ROUTE_COUNT: &str = "adj_rib_in_route_count";

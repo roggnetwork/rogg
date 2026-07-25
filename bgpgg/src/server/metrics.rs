@@ -19,7 +19,7 @@
 use super::BgpServer;
 use crate::bgp::multiprotocol::AfiSafi;
 use crate::metrics;
-use crate::peer::{PeerOp, PeerStatistics};
+use crate::peer::{BgpState, PeerOp, PeerStatistics};
 use std::net::IpAddr;
 use std::time::Duration;
 use telemetry::{metric, Unit};
@@ -38,6 +38,8 @@ pub struct MetricsSnapshot {
 #[derive(Debug)]
 pub struct PeerMetricsSnapshot {
     pub peer_ip: IpAddr,
+    /// Most-progressed FSM state across the peer's connections.
+    pub state: BgpState,
     /// Set for established sessions only.
     pub uptime_secs: Option<u64>,
     pub adj_rib_in_total: usize,
@@ -59,6 +61,7 @@ impl BgpServer {
                 let established = peer.established_conn();
                 PeerMetricsSnapshot {
                     peer_ip: *peer_ip,
+                    state: peer.max_state().1,
                     uptime_secs: established
                         .and_then(|conn| conn.state_changed_at)
                         .map(|at| at.elapsed().as_secs()),
@@ -94,6 +97,14 @@ impl BgpServer {
 
         for peer in &snapshot.peers {
             let peer_ip = &peer.peer_ip;
+            metric(
+                metrics::SESSION_STATE,
+                peer.state.code() as u32,
+                Unit::Count,
+                &[("peer", peer_ip)],
+                &[&["peer"]],
+                &[],
+            );
             if let Some(uptime) = peer.uptime_secs {
                 metric(
                     metrics::SESSION_UPTIME_SECONDS,
@@ -288,6 +299,10 @@ mod tests {
         assert_eq!(total.len(), 1);
         assert_eq!(total[0].value, Value::UInt(1));
 
+        let state = capture.find("session_state", &[("peer", "10.99.99.1")]);
+        assert_eq!(state.len(), 1);
+        assert_eq!(state[0].value, Value::UInt(6));
+
         let uptime = capture.find("session_uptime_seconds", &[("peer", "10.99.99.1")]);
         assert_eq!(uptime.len(), 1);
 
@@ -342,6 +357,7 @@ mod tests {
         let peer_ip: IpAddr = "10.99.99.2".parse().unwrap();
         emit_message_counter_metrics(vec![PeerMetricsSnapshot {
             peer_ip,
+            state: BgpState::Established,
             uptime_secs: Some(1),
             adj_rib_in_total: 0,
             adj_rib_out_total: 0,
