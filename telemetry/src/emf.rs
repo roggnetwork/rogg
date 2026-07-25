@@ -42,18 +42,18 @@ impl EmfSink {
     }
 }
 
-/// The record's dimension sets, each with "router_id" added, sorted.
-/// CloudWatch only builds series for declared sets. No sets -> router_id only.
+/// The record's dimension sets, each with "RouterId" added, sorted.
+/// CloudWatch only builds series for declared sets. No sets -> RouterId only.
 fn dimension_sets(record: &MetricRecord) -> Vec<Vec<String>> {
     if record.dimension_sets.is_empty() {
-        return vec![vec!["router_id".to_string()]];
+        return vec![vec!["RouterId".to_string()]];
     }
     record
         .dimension_sets
         .iter()
         .map(|set| {
             let mut set: Vec<String> = set.clone();
-            set.push("router_id".to_string());
+            set.push("RouterId".to_string());
             set.sort();
             set.dedup();
             set
@@ -116,7 +116,7 @@ impl Sink for EmfSink {
             root.insert(key.clone(), JsonValue::String(val.clone()));
         }
         root.insert(
-            "router_id".to_string(),
+            "RouterId".to_string(),
             JsonValue::String(record.router_id.clone()),
         );
         root.insert("_aws".to_string(), JsonValue::Object(aws));
@@ -160,18 +160,18 @@ mod tests {
         let (sink, buffer) = sink_with_buffer();
         with_sink(sink, || {
             metric(
-                "notification_received_count",
+                "NotificationReceivedCount",
                 1,
                 Unit::Count,
-                &[("peer", &"10.0.0.1")],
-                &[&["peer"]],
-                &[("code", &6)],
+                &[("Peer", &"10.0.0.1")],
+                &[&["Peer"]],
+                &[("Code", &6)],
             );
         });
         assert_eq!(
             buffer.contents(),
             concat!(
-                r#"{"_aws":{"CloudWatchMetrics":[{"Dimensions":[["peer","router_id"]],"Metrics":[{"Name":"notification_received_count","Unit":"Count"}],"Namespace":"Rogg/Bgpgg"}],"Timestamp":1784971456789},"code":"6","notification_received_count":1,"peer":"10.0.0.1","router_id":"1.1.1.1"}"#,
+                r#"{"Code":"6","NotificationReceivedCount":1,"Peer":"10.0.0.1","RouterId":"1.1.1.1","_aws":{"CloudWatchMetrics":[{"Dimensions":[["Peer","RouterId"]],"Metrics":[{"Name":"NotificationReceivedCount","Unit":"Count"}],"Namespace":"Rogg/Bgpgg"}],"Timestamp":1784971456789}}"#,
                 "\n"
             )
         );
@@ -182,19 +182,19 @@ mod tests {
         let (sink, buffer) = sink_with_buffer();
         with_sink(sink, || {
             metric(
-                "session_convergence_ms",
+                "SessionConvergenceMilliseconds",
                 420u64,
                 Unit::Milliseconds,
-                &[("peer", &"10.0.0.1"), ("afi_safi", &"ipv4-unicast")],
-                &[&["peer"], &["afi_safi"], &["peer", "afi_safi"]],
+                &[("Peer", &"10.0.0.1"), ("AfiSafi", &"ipv4-unicast")],
+                &[&["Peer"], &["AfiSafi"], &["Peer", "AfiSafi"]],
                 &[],
             );
         });
-        // Each declared set becomes a CloudWatch series, router_id in all.
+        // Each declared set becomes a CloudWatch series, RouterId in all.
         assert_eq!(
             buffer.contents(),
             concat!(
-                r#"{"_aws":{"CloudWatchMetrics":[{"Dimensions":[["peer","router_id"],["afi_safi","router_id"],["afi_safi","peer","router_id"]],"Metrics":[{"Name":"session_convergence_ms","Unit":"Milliseconds"}],"Namespace":"Rogg/Bgpgg"}],"Timestamp":1784971456789},"afi_safi":"ipv4-unicast","peer":"10.0.0.1","router_id":"1.1.1.1","session_convergence_ms":420}"#,
+                r#"{"AfiSafi":"ipv4-unicast","Peer":"10.0.0.1","RouterId":"1.1.1.1","SessionConvergenceMilliseconds":420,"_aws":{"CloudWatchMetrics":[{"Dimensions":[["Peer","RouterId"],["AfiSafi","RouterId"],["AfiSafi","Peer","RouterId"]],"Metrics":[{"Name":"SessionConvergenceMilliseconds","Unit":"Milliseconds"}],"Namespace":"Rogg/Bgpgg"}],"Timestamp":1784971456789}}"#,
                 "\n"
             )
         );
@@ -204,12 +204,12 @@ mod tests {
     fn test_output_line_no_dims_router_id_only() {
         let (sink, buffer) = sink_with_buffer();
         with_sink(sink, || {
-            metric("process_memory_bytes", 1024u64, Unit::Bytes, &[], &[], &[]);
+            metric("ProcessMemoryBytes", 1024u64, Unit::Bytes, &[], &[], &[]);
         });
         assert_eq!(
             buffer.contents(),
             concat!(
-                r#"{"_aws":{"CloudWatchMetrics":[{"Dimensions":[["router_id"]],"Metrics":[{"Name":"process_memory_bytes","Unit":"Bytes"}],"Namespace":"Rogg/Bgpgg"}],"Timestamp":1784971456789},"process_memory_bytes":1024,"router_id":"1.1.1.1"}"#,
+                r#"{"ProcessMemoryBytes":1024,"RouterId":"1.1.1.1","_aws":{"CloudWatchMetrics":[{"Dimensions":[["RouterId"]],"Metrics":[{"Name":"ProcessMemoryBytes","Unit":"Bytes"}],"Namespace":"Rogg/Bgpgg"}],"Timestamp":1784971456789}}"#,
                 "\n"
             )
         );

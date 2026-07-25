@@ -54,8 +54,8 @@ fn mask_dynamic_values(body: &str) -> String {
     for line in body.lines() {
         let dynamic = line.starts_with("bgpgg_session_uptime_seconds{")
             || line.starts_with("bgpgg_process_memory_bytes ")
-            || line.contains("type=\"keepalive\"")
-            || line.contains("type=\"update\"");
+            || line.contains("message_type=\"keepalive\"")
+            || line.contains("message_type=\"update\"");
         match line.rsplit_once(' ') {
             Some((prefix, _)) if dynamic => {
                 masked.push_str(prefix);
@@ -127,17 +127,17 @@ bgpgg_adj_rib_out_afi_safi_route_count{{peer=\"127.0.0.2\",afi_safi=\"IPv6/Unica
 bgpgg_adj_rib_out_afi_safi_route_count{{peer=\"127.0.0.2\",afi_safi=\"LinkState/LinkState\"}} 0
 {process_memory}\
 # TYPE bgpgg_messages_received_total counter
-bgpgg_messages_received_total{{peer=\"127.0.0.2\",type=\"open\"}} 1
-bgpgg_messages_received_total{{peer=\"127.0.0.2\",type=\"keepalive\"}} X
-bgpgg_messages_received_total{{peer=\"127.0.0.2\",type=\"update\"}} X
-bgpgg_messages_received_total{{peer=\"127.0.0.2\",type=\"notification\"}} 0
-bgpgg_messages_received_total{{peer=\"127.0.0.2\",type=\"route_refresh\"}} 0
+bgpgg_messages_received_total{{peer=\"127.0.0.2\",message_type=\"open\"}} 1
+bgpgg_messages_received_total{{peer=\"127.0.0.2\",message_type=\"keepalive\"}} X
+bgpgg_messages_received_total{{peer=\"127.0.0.2\",message_type=\"update\"}} X
+bgpgg_messages_received_total{{peer=\"127.0.0.2\",message_type=\"notification\"}} 0
+bgpgg_messages_received_total{{peer=\"127.0.0.2\",message_type=\"route_refresh\"}} 0
 # TYPE bgpgg_messages_sent_total counter
-bgpgg_messages_sent_total{{peer=\"127.0.0.2\",type=\"open\"}} 1
-bgpgg_messages_sent_total{{peer=\"127.0.0.2\",type=\"keepalive\"}} X
-bgpgg_messages_sent_total{{peer=\"127.0.0.2\",type=\"update\"}} X
-bgpgg_messages_sent_total{{peer=\"127.0.0.2\",type=\"notification\"}} 0
-bgpgg_messages_sent_total{{peer=\"127.0.0.2\",type=\"route_refresh\"}} 0
+bgpgg_messages_sent_total{{peer=\"127.0.0.2\",message_type=\"open\"}} 1
+bgpgg_messages_sent_total{{peer=\"127.0.0.2\",message_type=\"keepalive\"}} X
+bgpgg_messages_sent_total{{peer=\"127.0.0.2\",message_type=\"update\"}} X
+bgpgg_messages_sent_total{{peer=\"127.0.0.2\",message_type=\"notification\"}} 0
+bgpgg_messages_sent_total{{peer=\"127.0.0.2\",message_type=\"route_refresh\"}} 0
 "
     );
     assert_eq!(mask_dynamic_values(body), expected);
@@ -170,7 +170,7 @@ async fn test_prometheus_reconfigure() {
         .commit_config(new_config.to_conf_str())
         .await
         .expect("commit listen change");
-    assert_metric(&server, "config_reload_success_count", &[], &[]).await;
+    assert_metric(&server, "ConfigReloadSuccessCount", &[], &[]).await;
 
     poll_until(
         || async {

@@ -575,8 +575,8 @@ impl BgpServer {
                 metrics::INITIAL_ADVERTISEMENT_MILLISECONDS,
                 start.elapsed().as_millis() as u64,
                 Unit::Milliseconds,
-                &[("peer", &peer_ip), ("afi_safi", afi_safi)],
-                &[&["peer"], &["afi_safi"], &["peer", "afi_safi"]],
+                &[("Peer", &peer_ip), ("AfiSafi", afi_safi)],
+                &[&["Peer"], &["AfiSafi"], &["Peer", "AfiSafi"]],
                 &[],
             );
         }
@@ -758,8 +758,8 @@ impl BgpServer {
             metrics::ROUTE_REFRESH_PROCESSING_MILLISECONDS,
             start.elapsed().as_millis() as u64,
             Unit::Milliseconds,
-            &[("peer", &peer_ip), ("afi_safi", &AfiSafi::new(afi, safi))],
-            &[&["peer"], &["afi_safi"], &["peer", "afi_safi"]],
+            &[("Peer", &peer_ip), ("AfiSafi", &AfiSafi::new(afi, safi))],
+            &[&["Peer"], &["AfiSafi"], &["Peer", "AfiSafi"]],
             &[],
         );
     }

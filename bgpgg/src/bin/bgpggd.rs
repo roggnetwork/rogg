@@ -79,12 +79,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_span_events(FmtSpan::NONE)
         .init();
 
-    // Bind runtime threads to this daemon's telemetry.
-    let telemetry = server.telemetry.clone();
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .on_thread_start(move || telemetry::bind(telemetry.clone()))
-        .build()?;
+    // Bind every runtime thread (including this one, which drives block_on and
+    // runs the server loop) to this daemon's telemetry.
+    let runtime = telemetry::bound_runtime(server.telemetry.clone())?;
     runtime.block_on(run(args, server))
 }
 

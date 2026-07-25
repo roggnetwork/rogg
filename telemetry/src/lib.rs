@@ -26,7 +26,7 @@
 //!     .build()?;
 //!
 //! // emit, anywhere on that runtime:
-//! metric("session_down_count", 1, Unit::Count, &[("peer", &peer_ip)], &[&["peer"]], &[]);
+//! metric("SessionDownCount", 1, Unit::Count, &[("Peer", &peer_ip)], &[&["Peer"]], &[]);
 //! ```
 //!
 //! `metric()` on an unbound thread or with no sink set is a no-op.
@@ -183,6 +183,19 @@ pub fn bind(handle: Telemetry) {
     BOUND.with(|slot| *slot.borrow_mut() = Some(handle));
 }
 
+/// Build a multi-threaded runtime with every thread bound to `handle`. This
+/// binds the calling thread too: `block_on` polls the top-level future on it,
+/// and `on_thread_start` does not cover it, so a `metric()` emitted outside a
+/// spawned task would otherwise be a silent no-op. Call on the same thread
+/// that will drive `block_on`.
+pub fn bound_runtime(handle: Telemetry) -> std::io::Result<tokio::runtime::Runtime> {
+    bind(handle.clone());
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .on_thread_start(move || bind(handle.clone()))
+        .build()
+}
+
 /// Emit one metric to the sink bound to this thread. No-op if unbound.
 /// `dimensions` are the values; `dimension_sets` name which combinations get
 /// their own series (e.g. [["peer"], ["code"], ["peer", "code"]]).
@@ -318,7 +331,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::test_util::with_sink;
-    use crate::{metric, CaptureSink, Unit, Value};
+    use crate::{bound_runtime, metric, CaptureSink, Telemetry, Unit, Value};
 
     #[test]
     fn test_unit_strings() {
@@ -373,5 +386,23 @@ mod tests {
             records[0].context,
             vec![("reason".to_string(), "test".to_string())]
         );
+    }
+
+    // A metric emitted from the top-level future (block_on's thread, not a
+    // spawned task) must still reach the sink. on_thread_start misses that thread.
+    #[test]
+    fn test_metric_outside_spawn_reaches_sink() {
+        let handle = Telemetry::new("1.1.1.1");
+        let capture = Arc::new(CaptureSink::new());
+        handle.set_sink(Some(capture.clone()));
+
+        let runtime = bound_runtime(handle).unwrap();
+        runtime.block_on(async {
+            metric("Probe", 1u64, Unit::Count, &[], &[], &[]);
+        });
+
+        let records = capture.records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].name, "Probe");
     }
 }

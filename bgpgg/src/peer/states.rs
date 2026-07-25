@@ -209,9 +209,9 @@ impl Peer {
             metrics::NOTIFICATION_RECEIVED_COUNT,
             1,
             Unit::Count,
-            &[("peer", &self.addr), ("code", &notif.error().error_code())],
-            &[&["peer"], &["code"], &["peer", "code"]],
-            &[("subcode", &notif.error().error_subcode())],
+            &[("Peer", &self.addr), ("Code", &notif.error().error_code())],
+            &[&["Peer"], &["Code"], &["Peer", "Code"]],
+            &[("Subcode", &notif.error().error_subcode())],
         );
 
         // RFC 5492: if peer doesn't understand capabilities, suppress them on retry.
@@ -356,8 +356,8 @@ impl Peer {
             metrics::HOLD_TIMER_EXPIRED_COUNT,
             1,
             Unit::Count,
-            &[("peer", &self.addr)],
-            &[&["peer"]],
+            &[("Peer", &self.addr)],
+            &[&["Peer"]],
             &[],
         );
         let notif = NotificationMessage::new(BgpError::HoldTimerExpired, vec![]);

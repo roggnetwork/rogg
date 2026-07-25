@@ -77,8 +77,8 @@ impl BmpTcpClient {
                         metrics::BMP_CONNECTION_DOWN_COUNT,
                         1,
                         Unit::Count,
-                        &[("destination", &self.addr)],
-                        &[&["destination"]],
+                        &[("Destination", &self.addr)],
+                        &[&["Destination"]],
                         &[],
                     );
                     self.conn = None; // Trigger reconnect

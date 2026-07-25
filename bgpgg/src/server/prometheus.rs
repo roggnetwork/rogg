@@ -242,7 +242,7 @@ fn build_families(
                 select(peer_stats).map(|(msg_type, count)| Sample {
                     labels: vec![
                         peer_label(peer_ip),
-                        ("type".to_string(), msg_type.to_string()),
+                        ("message_type".to_string(), msg_type.to_string()),
                     ],
                     value: count as f64,
                 })

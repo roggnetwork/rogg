@@ -70,8 +70,8 @@ impl Peer {
                     metrics::SESSION_ESTABLISHED_COUNT,
                     1,
                     Unit::Count,
-                    &[("peer", &self.addr)],
-                    &[&["peer"]],
+                    &[("Peer", &self.addr)],
+                    &[&["Peer"]],
                     &[],
                 );
 

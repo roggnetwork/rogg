@@ -58,26 +58,20 @@ async fn test_hold_timer_expiry() {
     assert_eq!(*notif.error(), BgpError::HoldTimerExpired);
 
     let peer_ip = fake_peer.address.clone();
-    assert_metric(
-        &server,
-        "hold_timer_expired_count",
-        &[("peer", &peer_ip)],
-        &[],
-    )
-    .await;
+    assert_metric(&server, "HoldTimerExpiredCount", &[("Peer", &peer_ip)], &[]).await;
     // HoldTimerExpired = code 4
     assert_metric(
         &server,
-        "notification_sent_count",
-        &[("peer", &peer_ip), ("code", "4")],
+        "NotificationSentCount",
+        &[("Peer", &peer_ip), ("Code", "4")],
         &[],
     )
     .await;
     assert_metric(
         &server,
-        "session_down_count",
-        &[("peer", &peer_ip)],
-        &[("reason", "local-notification")],
+        "SessionDownCount",
+        &[("Peer", &peer_ip)],
+        &[("Reason", "local-notification")],
     )
     .await;
 

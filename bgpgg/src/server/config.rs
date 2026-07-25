@@ -48,7 +48,7 @@ pub(crate) async fn commit_config(
         Unit::Count,
         &[],
         &[],
-        &[("duration_ms", &start.elapsed().as_millis())],
+        &[("DurationMs", &start.elapsed().as_millis())],
     );
     result
 }

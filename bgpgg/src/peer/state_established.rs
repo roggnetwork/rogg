@@ -289,11 +289,11 @@ impl Peer {
                                         1,
                                         Unit::Count,
                                         &[
-                                            ("peer", &peer_ip),
-                                            ("code", &notif.error().error_code()),
+                                            ("Peer", &peer_ip),
+                                            ("Code", &notif.error().error_code()),
                                         ],
-                                        &[&["peer"], &["code"], &["peer", "code"]],
-                                        &[("subcode", &notif.error().error_subcode())],
+                                        &[&["Peer"], &["Code"], &["Peer", "Code"]],
+                                        &[("Subcode", &notif.error().error_subcode())],
                                     );
                                 }
                             }
@@ -313,9 +313,9 @@ impl Peer {
                                 metrics::SESSION_DOWN_COUNT,
                                 1,
                                 Unit::Count,
-                                &[("peer", &peer_ip)],
-                                &[&["peer"]],
-                                &[("reason", &PeerDownReason::LocalNotification(notif))],
+                                &[("Peer", &peer_ip)],
+                                &[&["Peer"]],
+                                &[("Reason", &PeerDownReason::LocalNotification(notif))],
                             );
                             return true;
                         }

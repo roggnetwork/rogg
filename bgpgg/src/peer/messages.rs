@@ -429,11 +429,11 @@ impl Peer {
             1,
             Unit::Count,
             &[
-                ("peer", &self.addr),
-                ("code", &notif_msg.error().error_code()),
+                ("Peer", &self.addr),
+                ("Code", &notif_msg.error().error_code()),
             ],
-            &[&["peer"], &["code"], &["peer", "code"]],
-            &[("subcode", &notif_msg.error().error_subcode())],
+            &[&["Peer"], &["Code"], &["Peer", "Code"]],
+            &[("Subcode", &notif_msg.error().error_subcode())],
         );
         warn!(peer_ip = %self.addr, error = ?notif_msg.error(), "sent NOTIFICATION");
         Ok(())

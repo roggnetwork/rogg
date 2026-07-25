@@ -101,8 +101,8 @@ impl BgpServer {
                 metrics::SESSION_STATE,
                 peer.state.code() as u32,
                 Unit::Count,
-                &[("peer", peer_ip)],
-                &[&["peer"]],
+                &[("Peer", peer_ip)],
+                &[&["Peer"]],
                 &[],
             );
             if let Some(uptime) = peer.uptime_secs {
@@ -110,8 +110,8 @@ impl BgpServer {
                     metrics::SESSION_UPTIME_SECONDS,
                     uptime,
                     Unit::Seconds,
-                    &[("peer", peer_ip)],
-                    &[&["peer"]],
+                    &[("Peer", peer_ip)],
+                    &[&["Peer"]],
                     &[],
                 );
             }
@@ -120,16 +120,16 @@ impl BgpServer {
                 metrics::ADJ_RIB_IN_ROUTE_COUNT,
                 peer.adj_rib_in_total,
                 Unit::Count,
-                &[("peer", peer_ip)],
-                &[&["peer"]],
+                &[("Peer", peer_ip)],
+                &[&["Peer"]],
                 &[],
             );
             metric(
                 metrics::ADJ_RIB_OUT_ROUTE_COUNT,
                 peer.adj_rib_out_total,
                 Unit::Count,
-                &[("peer", peer_ip)],
-                &[&["peer"]],
+                &[("Peer", peer_ip)],
+                &[&["Peer"]],
                 &[],
             );
 
@@ -138,8 +138,8 @@ impl BgpServer {
                     metrics::ADJ_RIB_IN_AFI_SAFI_ROUTE_COUNT,
                     *count,
                     Unit::Count,
-                    &[("peer", peer_ip), ("afi_safi", afi_safi)],
-                    &[&["afi_safi"], &["peer", "afi_safi"]],
+                    &[("Peer", peer_ip), ("AfiSafi", afi_safi)],
+                    &[&["AfiSafi"], &["Peer", "AfiSafi"]],
                     &[],
                 );
             }
@@ -148,8 +148,8 @@ impl BgpServer {
                     metrics::ADJ_RIB_OUT_AFI_SAFI_ROUTE_COUNT,
                     *count,
                     Unit::Count,
-                    &[("peer", peer_ip), ("afi_safi", afi_safi)],
-                    &[&["afi_safi"], &["peer", "afi_safi"]],
+                    &[("Peer", peer_ip), ("AfiSafi", afi_safi)],
+                    &[&["AfiSafi"], &["Peer", "AfiSafi"]],
                     &[],
                 );
             }
@@ -160,8 +160,8 @@ impl BgpServer {
                 metrics::LOC_RIB_ROUTE_COUNT,
                 *count,
                 Unit::Count,
-                &[("afi_safi", afi_safi)],
-                &[&["afi_safi"]],
+                &[("AfiSafi", afi_safi)],
+                &[&["AfiSafi"]],
                 &[],
             );
         }
@@ -214,18 +214,18 @@ pub(crate) async fn collect_peer_statistics(
 pub(crate) async fn emit_message_counter_metrics(peers: Vec<PeerMetricsSnapshot>) {
     for (peer_ip, stats) in collect_peer_statistics(&peers).await {
         let received: [(&str, u64); 5] = [
-            ("open", stats.open_received),
-            ("keepalive", stats.keepalive_received),
-            ("update", stats.update_received),
-            ("notification", stats.notification_received),
-            ("route_refresh", stats.route_refresh_received),
+            ("Open", stats.open_received),
+            ("Keepalive", stats.keepalive_received),
+            ("Update", stats.update_received),
+            ("Notification", stats.notification_received),
+            ("RouteRefresh", stats.route_refresh_received),
         ];
         let sent: [(&str, u64); 5] = [
-            ("open", stats.open_sent),
-            ("keepalive", stats.keepalive_sent),
-            ("update", stats.update_sent),
-            ("notification", stats.notification_sent),
-            ("route_refresh", stats.route_refresh_sent),
+            ("Open", stats.open_sent),
+            ("Keepalive", stats.keepalive_sent),
+            ("Update", stats.update_sent),
+            ("Notification", stats.notification_sent),
+            ("RouteRefresh", stats.route_refresh_sent),
         ];
         for (name, counts) in [
             (metrics::MESSAGES_RECEIVED_TOTAL, received),
@@ -236,8 +236,8 @@ pub(crate) async fn emit_message_counter_metrics(peers: Vec<PeerMetricsSnapshot>
                     name,
                     count,
                     Unit::Count,
-                    &[("peer", &peer_ip), ("type", &msg_type)],
-                    &[&["type"], &["peer", "type"]],
+                    &[("Peer", &peer_ip), ("MessageType", &msg_type)],
+                    &[&["MessageType"], &["Peer", "MessageType"]],
                     &[],
                 );
             }
@@ -262,6 +262,7 @@ fn process_rss_bytes() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::{emit_message_counter_metrics, PeerMetricsSnapshot};
+    use crate::metrics;
     use crate::peer::{BgpState, PeerOp, PeerStatistics};
     use crate::server::{BgpServer, ConnectionState, PeerInfo};
     use conf::bgp::BgpConfig;
@@ -295,43 +296,44 @@ mod tests {
         let snapshot = server.collect_metrics_snapshot();
         server.emit_periodic_metrics(&snapshot);
 
-        let total = capture.find("peer_count", &[]);
+        let total = capture.find(metrics::PEER_COUNT, &[]);
         assert_eq!(total.len(), 1);
         assert_eq!(total[0].value, Value::UInt(1));
 
-        let state = capture.find("session_state", &[("peer", "10.99.99.1")]);
+        let state = capture.find(metrics::SESSION_STATE, &[("Peer", "10.99.99.1")]);
         assert_eq!(state.len(), 1);
         assert_eq!(state[0].value, Value::UInt(6));
 
-        let uptime = capture.find("session_uptime_seconds", &[("peer", "10.99.99.1")]);
+        let uptime = capture.find(metrics::SESSION_UPTIME_SECONDS, &[("Peer", "10.99.99.1")]);
         assert_eq!(uptime.len(), 1);
 
-        let adj_in_total = capture.find("adj_rib_in_route_count", &[("peer", "10.99.99.1")]);
+        let adj_in_total = capture.find(metrics::ADJ_RIB_IN_ROUTE_COUNT, &[("Peer", "10.99.99.1")]);
         assert_eq!(adj_in_total.len(), 1);
         assert_eq!(adj_in_total[0].value, Value::UInt(0));
 
         let adj_in = capture.find(
-            "adj_rib_in_afi_safi_route_count",
-            &[("peer", "10.99.99.1"), ("afi_safi", "IPv4/Unicast")],
+            metrics::ADJ_RIB_IN_AFI_SAFI_ROUTE_COUNT,
+            &[("Peer", "10.99.99.1"), ("AfiSafi", "IPv4/Unicast")],
         );
         assert_eq!(adj_in.len(), 1);
         assert_eq!(adj_in[0].value, Value::UInt(0));
 
-        let adj_out_total = capture.find("adj_rib_out_route_count", &[("peer", "10.99.99.1")]);
+        let adj_out_total =
+            capture.find(metrics::ADJ_RIB_OUT_ROUTE_COUNT, &[("Peer", "10.99.99.1")]);
         assert_eq!(adj_out_total.len(), 1);
 
         let adj_out = capture.find(
-            "adj_rib_out_afi_safi_route_count",
-            &[("peer", "10.99.99.1"), ("afi_safi", "IPv4/Unicast")],
+            metrics::ADJ_RIB_OUT_AFI_SAFI_ROUTE_COUNT,
+            &[("Peer", "10.99.99.1"), ("AfiSafi", "IPv4/Unicast")],
         );
         assert_eq!(adj_out.len(), 1);
 
         assert!(!capture
-            .find("loc_rib_route_count", &[("afi_safi", "IPv4/Unicast")])
+            .find(metrics::LOC_RIB_ROUTE_COUNT, &[("AfiSafi", "IPv4/Unicast")])
             .is_empty());
 
         #[cfg(target_os = "linux")]
-        assert!(!capture.find("process_memory_bytes", &[]).is_empty());
+        assert!(!capture.find(metrics::PROCESS_MEMORY_BYTES, &[]).is_empty());
     }
 
     #[tokio::test]
@@ -368,21 +370,21 @@ mod tests {
         .await;
 
         let received = capture.find(
-            "messages_received_total",
-            &[("peer", "10.99.99.2"), ("type", "update")],
+            metrics::MESSAGES_RECEIVED_TOTAL,
+            &[("Peer", "10.99.99.2"), ("MessageType", "Update")],
         );
         assert_eq!(received.len(), 1);
         assert_eq!(received[0].value, Value::UInt(7));
 
         let sent = capture.find(
-            "messages_sent_total",
-            &[("peer", "10.99.99.2"), ("type", "keepalive")],
+            metrics::MESSAGES_SENT_TOTAL,
+            &[("Peer", "10.99.99.2"), ("MessageType", "Keepalive")],
         );
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].value, Value::UInt(3));
 
         // All five types emitted per direction.
-        assert_eq!(capture.find("messages_received_total", &[]).len(), 5);
-        assert_eq!(capture.find("messages_sent_total", &[]).len(), 5);
+        assert_eq!(capture.find(metrics::MESSAGES_RECEIVED_TOTAL, &[]).len(), 5);
+        assert_eq!(capture.find(metrics::MESSAGES_SENT_TOTAL, &[]).len(), 5);
     }
 }

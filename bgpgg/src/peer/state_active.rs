@@ -103,8 +103,8 @@ impl Peer {
                     metrics::CONNECT_RETRY_COUNT,
                     1,
                     Unit::Count,
-                    &[("peer", &self.addr)],
-                    &[&["peer"]],
+                    &[("Peer", &self.addr)],
+                    &[&["Peer"]],
                     &[],
                 );
                 self.fsm.timers.start_connect_retry();

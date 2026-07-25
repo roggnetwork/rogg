@@ -111,16 +111,16 @@ async fn test_update_malformed_attribute_list() {
     // UpdateMessageError = code 3, MalformedAttributeList = subcode 1
     assert_metric(
         &server,
-        "notification_sent_count",
-        &[("peer", &peer_ip), ("code", "3")],
-        &[("subcode", "1")],
+        "NotificationSentCount",
+        &[("Peer", &peer_ip), ("Code", "3")],
+        &[("Subcode", "1")],
     )
     .await;
     assert_metric(
         &server,
-        "session_down_count",
-        &[("peer", &peer_ip)],
-        &[("reason", "local-notification")],
+        "SessionDownCount",
+        &[("Peer", &peer_ip)],
+        &[("Reason", "local-notification")],
     )
     .await;
 }

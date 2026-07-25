@@ -664,9 +664,9 @@ impl Peer {
                 metrics::SESSION_DOWN_COUNT,
                 1,
                 Unit::Count,
-                &[("peer", &self.addr)],
-                &[&["peer"]],
-                &[("reason", &reason)],
+                &[("Peer", &self.addr)],
+                &[&["Peer"]],
+                &[("Reason", &reason)],
             );
         }
 
@@ -753,8 +753,8 @@ impl Peer {
                     metrics::SESSION_CONVERGENCE_MILLISECONDS,
                     established_at.elapsed().as_millis() as u64,
                     Unit::Milliseconds,
-                    &[("peer", &self.addr), ("afi_safi", &afi_safi)],
-                    &[&["peer"], &["afi_safi"], &["peer", "afi_safi"]],
+                    &[("Peer", &self.addr), ("AfiSafi", &afi_safi)],
+                    &[&["Peer"], &["AfiSafi"], &["Peer", "AfiSafi"]],
                     &[],
                 );
             }
