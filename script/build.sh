@@ -21,14 +21,17 @@ mkdir -p "$RELEASE_DIR"
 build_and_package() {
     local TARGET=$1
     local PLATFORM=$2
+    # Per-target build dir: cross containers have different host glibc versions,
+    # so cached build-script binaries must not be shared between targets.
+    local TARGET_DIR="target/cross/$TARGET"
 
     echo "Building bgpgg $VERSION for $PLATFORM..."
-    cross build --release --target "$TARGET" --bin bgpggd --bin ggsh
+    CARGO_TARGET_DIR="$TARGET_DIR" cross build --release --target "$TARGET" --bin bgpggd --bin ggsh
 
     # Strip binaries (skip for FreeBSD)
     if [[ "$TARGET" != *"freebsd"* ]]; then
-        strip "target/$TARGET/release/bgpggd" 2>/dev/null || true
-        strip "target/$TARGET/release/ggsh" 2>/dev/null || true
+        strip "$TARGET_DIR/$TARGET/release/bgpggd" 2>/dev/null || true
+        strip "$TARGET_DIR/$TARGET/release/ggsh" 2>/dev/null || true
     fi
 
     # Package
@@ -36,8 +39,8 @@ build_and_package() {
     ARCHIVE_FILE="$RELEASE_DIR/$ARCHIVE_NAME.tar.gz"
 
     mkdir -p "$ARCHIVE_NAME"
-    cp "target/$TARGET/release/bgpggd" "$ARCHIVE_NAME/"
-    cp "target/$TARGET/release/ggsh" "$ARCHIVE_NAME/"
+    cp "$TARGET_DIR/$TARGET/release/bgpggd" "$ARCHIVE_NAME/"
+    cp "$TARGET_DIR/$TARGET/release/ggsh" "$ARCHIVE_NAME/"
     cp LICENSE "$ARCHIVE_NAME/" 2>/dev/null || true
 
     tar czf "$ARCHIVE_FILE" "$ARCHIVE_NAME"
