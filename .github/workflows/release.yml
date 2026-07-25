@@ -63,7 +63,7 @@ jobs:
         run: |
           SEMVER="${VERSION#v}"
           sed -i "s/^version = \".*\"/version = \"$SEMVER\"/" Cargo.toml
-          cargo generate-lockfile
+          cargo update --workspace
 
       - name: Setup dependencies
         run: make setup
