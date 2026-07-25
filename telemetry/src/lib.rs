@@ -44,6 +44,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 mod capture;
 mod emf;
 mod json;
+pub mod prometheus;
 
 pub use capture::CaptureSink;
 pub use emf::EmfSink;

@@ -69,7 +69,15 @@ async fn apply_config(
     let old_config = server.config.clone();
     reconfigure_all(server, &old_config, &new_config, bind_addr).await?;
 
-    if old_config.telemetry != new_config.telemetry {
+    let old_sink = old_config
+        .telemetry
+        .as_ref()
+        .and_then(|telemetry| telemetry.sink.as_ref());
+    let new_sink = new_config
+        .telemetry
+        .as_ref()
+        .and_then(|telemetry| telemetry.sink.as_ref());
+    if old_sink != new_sink {
         server.telemetry.set_sink(build_telemetry_sink(&new_config));
     }
 
@@ -105,6 +113,7 @@ async fn reconfigure_all(
     server.reconfigure_originate_routes(old, new).await;
     server.reconfigure_bmp_servers(old, new).await?;
     server.reconfigure_rpki_caches(old, new).await?;
+    server.reconfigure_prometheus(new)?;
     Ok(())
 }
 
@@ -152,11 +161,15 @@ mod tests {
         let mut config = BgpConfig::default();
         assert!(build_telemetry_sink(&config).is_none());
 
-        config.telemetry = Some(TelemetryConfig { sink: None });
+        config.telemetry = Some(TelemetryConfig {
+            sink: None,
+            prometheus: None,
+        });
         assert!(build_telemetry_sink(&config).is_none());
 
         config.telemetry = Some(TelemetryConfig {
             sink: Some(TelemetrySink::Json),
+            prometheus: None,
         });
         assert!(build_telemetry_sink(&config).is_some());
 
@@ -164,6 +177,7 @@ mod tests {
             sink: Some(TelemetrySink::CloudwatchEmf {
                 namespace: "Rogg/Bgpgg".to_string(),
             }),
+            prometheus: None,
         });
         assert!(build_telemetry_sink(&config).is_some());
     }

@@ -352,12 +352,20 @@ pub struct BgpLsBlock {
 pub struct TelemetryBlock {
     pub json: bool,
     pub cloudwatch_emf: Option<CloudwatchEmfBlock>,
+    pub prometheus: Option<PrometheusBlock>,
 }
 
 /// `cloudwatch-emf { ... }` sub-block of telemetry.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CloudwatchEmfBlock {
     pub namespace: String,
+}
+
+/// `prometheus { ... }` sub-block of telemetry. `listen` defaults to
+/// 127.0.0.1:9273 when omitted.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PrometheusBlock {
+    pub listen: Option<String>,
 }
 
 /// `rpki-cache <ADDR> { ... }` block. Mirrors `conf::bgp::RpkiCacheConfig`.
@@ -680,6 +688,16 @@ impl fmt::Display for TelemetryBlock {
             writeln!(f, "  cloudwatch-emf {{")?;
             writeln!(f, "    namespace {}", emf.namespace)?;
             writeln!(f, "  }}")?;
+        }
+        if let Some(prometheus) = &self.prometheus {
+            match &prometheus.listen {
+                Some(listen) => {
+                    writeln!(f, "  prometheus {{")?;
+                    writeln!(f, "    listen {}", listen)?;
+                    writeln!(f, "  }}")?;
+                }
+                None => writeln!(f, "  prometheus {{}}")?,
+            }
         }
         write!(f, "}}")
     }
@@ -1869,6 +1887,14 @@ fn parse_telemetry_block(
                 expect_open_brace(tokens, pos)?;
                 block.cloudwatch_emf = Some(parse_cloudwatch_emf_block(line, tokens, pos)?);
             }
+            "prometheus" => {
+                if block.prometheus.is_some() {
+                    return Err(parse_err(line, "duplicate 'prometheus' block"));
+                }
+                skip_newlines(tokens, pos);
+                expect_open_brace(tokens, pos)?;
+                block.prometheus = Some(parse_prometheus_block(tokens, pos)?);
+            }
             other => {
                 return Err(parse_err(
                     line,
@@ -1939,6 +1965,39 @@ fn parse_cloudwatch_emf_block(
         Some(namespace) => Ok(CloudwatchEmfBlock { namespace }),
         None => Err(parse_err(block_line, "cloudwatch-emf requires 'namespace'")),
     }
+}
+
+fn parse_prometheus_block(
+    tokens: &[Token],
+    pos: &mut usize,
+) -> Result<PrometheusBlock, ParseError> {
+    let mut block = PrometheusBlock::default();
+    loop {
+        skip_newlines(tokens, pos);
+        match peek_kind(tokens, *pos) {
+            Some(TokenKind::CloseBrace) => break,
+            None => return Err(unexpected_eof(tokens, *pos)),
+            Some(TokenKind::OpenBrace) => {
+                return Err(parse_err(
+                    tokens[*pos].line,
+                    "unexpected '{' inside prometheus",
+                ));
+            }
+            _ => {}
+        }
+        let (key, line) = expect_word(tokens, pos)?;
+        match key.as_str() {
+            "listen" => block.listen = Some(parse_scalar(&key, line, tokens, pos)?),
+            other => {
+                return Err(parse_err(
+                    line,
+                    format!("unknown prometheus directive '{}'", other),
+                ));
+            }
+        }
+    }
+    expect_close_brace(tokens, pos)?;
+    Ok(block)
 }
 
 fn parse_rpki_cache_block(
@@ -2954,6 +3013,27 @@ service bgp {
     }
   }
 }",
+            "\
+service bgp {
+  asn 65001
+  router-id 1.1.1.1
+
+  telemetry {
+    json {}
+    prometheus {}
+  }
+}",
+            "\
+service bgp {
+  asn 65001
+  router-id 1.1.1.1
+
+  telemetry {
+    prometheus {
+      listen 0.0.0.0:9273
+    }
+  }
+}",
         ];
         for input in cases {
             let root =
@@ -3120,6 +3200,7 @@ service bgp {
                 TelemetryBlock {
                     json: true,
                     cloudwatch_emf: None,
+                    prometheus: None,
                 },
             ),
             (
@@ -3129,6 +3210,7 @@ service bgp {
                     cloudwatch_emf: Some(CloudwatchEmfBlock {
                         namespace: "Rogg/Bgpgg".to_string(),
                     }),
+                    prometheus: None,
                 },
             ),
             (
@@ -3136,6 +3218,35 @@ service bgp {
                 TelemetryBlock {
                     json: false,
                     cloudwatch_emf: None,
+                    prometheus: None,
+                },
+            ),
+            (
+                "telemetry {\n  prometheus {}\n}",
+                TelemetryBlock {
+                    json: false,
+                    cloudwatch_emf: None,
+                    prometheus: Some(PrometheusBlock { listen: None }),
+                },
+            ),
+            (
+                "telemetry {\n  json {}\n  prometheus {\n    listen 0.0.0.0:9273\n  }\n}",
+                TelemetryBlock {
+                    json: true,
+                    cloudwatch_emf: None,
+                    prometheus: Some(PrometheusBlock {
+                        listen: Some("0.0.0.0:9273".to_string()),
+                    }),
+                },
+            ),
+            (
+                "telemetry {\n  cloudwatch-emf {\n    namespace X\n  }\n  prometheus {}\n}",
+                TelemetryBlock {
+                    json: false,
+                    cloudwatch_emf: Some(CloudwatchEmfBlock {
+                        namespace: "X".to_string(),
+                    }),
+                    prometheus: Some(PrometheusBlock { listen: None }),
                 },
             ),
         ];
@@ -3156,6 +3267,18 @@ service bgp {
             (
                 "telemetry {\n  json {}\n  cloudwatch-emf {\n    namespace X\n  }\n}",
                 "'json' and 'cloudwatch-emf' are mutually exclusive",
+            ),
+            (
+                "telemetry {\n  json {}\n  prometheus {}\n  cloudwatch-emf {\n    namespace X\n  }\n}",
+                "'json' and 'cloudwatch-emf' are mutually exclusive",
+            ),
+            (
+                "telemetry {\n  prometheus {}\n  prometheus {}\n}",
+                "duplicate 'prometheus' block",
+            ),
+            (
+                "telemetry {\n  prometheus {\n    weird 1\n  }\n}",
+                "unknown prometheus directive 'weird'",
             ),
             (
                 "telemetry {\n  cloudwatch-emf {\n  }\n}",

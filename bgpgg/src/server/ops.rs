@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::metrics::MetricsSnapshot;
 use super::{AdminState, BgpServer, BmpOp, BmpPeerStats, ConnectionType, PeerInfo};
 use crate::bgp::community;
 use crate::bgp::ext_community::is_rpki_state_community;
@@ -115,6 +116,10 @@ pub enum ServerOp {
     /// Query BMP statistics for all established peers
     GetBmpStatistics {
         response: oneshot::Sender<Vec<BmpPeerStats>>,
+    },
+    /// Query server-owned gauges for a Prometheus scrape
+    GetMetricsSnapshot {
+        response: oneshot::Sender<MetricsSnapshot>,
     },
     /// VRP table update from RtrManager (RPKI).
     VrpUpdate { added: Vec<Vrp>, removed: Vec<Vrp> },
@@ -221,6 +226,9 @@ impl BgpServer {
             }
             ServerOp::GetBmpStatistics { response } => {
                 self.handle_get_bmp_statistics(response);
+            }
+            ServerOp::GetMetricsSnapshot { response } => {
+                let _ = response.send(self.collect_metrics_snapshot());
             }
             ServerOp::VrpUpdate { added, removed } => {
                 self.handle_vrp_update(added, removed).await;
@@ -564,7 +572,7 @@ impl BgpServer {
             let start = Instant::now();
             self.resend_routes_to_peer(peer_ip, afi_safi.afi, afi_safi.safi);
             metric(
-                metrics::INITIAL_ADVERTISEMENT_MS,
+                metrics::INITIAL_ADVERTISEMENT_MILLISECONDS,
                 start.elapsed().as_millis() as u64,
                 Unit::Milliseconds,
                 &[("peer", &peer_ip), ("afi_safi", afi_safi)],
@@ -747,7 +755,7 @@ impl BgpServer {
         }
 
         metric(
-            metrics::ROUTE_REFRESH_PROCESSING_MS,
+            metrics::ROUTE_REFRESH_PROCESSING_MILLISECONDS,
             start.elapsed().as_millis() as u64,
             Unit::Milliseconds,
             &[("peer", &peer_ip), ("afi_safi", &AfiSafi::new(afi, safi))],

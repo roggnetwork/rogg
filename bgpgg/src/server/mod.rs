@@ -17,6 +17,7 @@ pub(crate) mod metrics;
 pub use config::build_telemetry_sink;
 pub(crate) mod ops;
 pub(crate) mod ops_mgmt;
+pub(crate) mod prometheus;
 pub(crate) mod propagate;
 
 use crate::bgp::msg::{AddPathMask, Message, MessageFormat, PRE_OPEN_FORMAT};
@@ -606,6 +607,8 @@ pub struct BgpServer {
     /// This daemon's telemetry. Bound to runtime threads at startup;
     /// hot reload swaps the sink through this handle.
     pub telemetry: Telemetry,
+    /// Prometheus scrape listener: bound address and its task.
+    pub(crate) prometheus_listener: Option<(SocketAddr, JoinHandle<()>)>,
 }
 
 /// How often the server emits periodic metrics.
@@ -654,6 +657,7 @@ impl BgpServer {
             listener_fd: None,
             config_path,
             telemetry,
+            prometheus_listener: None,
         })
     }
 
@@ -729,6 +733,7 @@ impl BgpServer {
         self.init_configured_bmp_servers();
         self.init_configured_rpki_caches();
         self.init_configured_originate_routes();
+        self.init_configured_prometheus();
 
         // Periodic metrics (peer counts, uptime, RIB sizes, memory)
         let mut metrics_interval = tokio::time::interval(METRICS_INTERVAL);
@@ -752,7 +757,9 @@ impl BgpServer {
                 }
 
                 _ = metrics_interval.tick() => {
-                    self.emit_periodic_metrics();
+                    let snapshot = self.collect_metrics_snapshot();
+                    self.emit_periodic_metrics(&snapshot);
+                    tokio::spawn(metrics::emit_message_counter_metrics(snapshot.peers));
                 }
             }
         }

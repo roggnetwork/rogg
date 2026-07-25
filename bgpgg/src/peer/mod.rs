@@ -750,7 +750,7 @@ impl Peer {
         if let Some(established_at) = self.established_at {
             if self.convergence_reported.insert(afi_safi) {
                 metric(
-                    metrics::SESSION_CONVERGENCE_MS,
+                    metrics::SESSION_CONVERGENCE_MILLISECONDS,
                     established_at.elapsed().as_millis() as u64,
                     Unit::Milliseconds,
                     &[("peer", &self.addr), ("afi_safi", &afi_safi)],

@@ -19,8 +19,8 @@ use crate::language_bgp::{
     Disposition, ExtCommunitySetBlock, FamilyBlock, FamilyDirective, LargeCommunitySetBlock,
     MasklengthRange, MatchClause, MatchOptionKind, MatchSetRef, MaxPrefixActionKind, MedSet,
     NeighborSetBlock, OriginateRoute, PeerBlock, PolicyBlock, PolicyRule, PrefixListBlock,
-    PrefixListEntry, RpkiCacheBlock, RpkiValidationKind, SetClause, Setting, StatementBlock,
-    TelemetryBlock,
+    PrefixListEntry, PrometheusBlock, RpkiCacheBlock, RpkiValidationKind, SetClause, Setting,
+    StatementBlock, TelemetryBlock,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -1047,6 +1047,9 @@ pub struct TelemetryConfig {
     /// Log-emission format for metrics. None = metrics disabled.
     #[serde(default)]
     pub sink: Option<TelemetrySink>,
+    /// Prometheus pull endpoint. None = disabled. Coexists with any sink.
+    #[serde(default)]
+    pub prometheus: Option<PrometheusConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1054,6 +1057,17 @@ pub struct TelemetryConfig {
 pub enum TelemetrySink {
     Json,
     CloudwatchEmf { namespace: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct PrometheusConfig {
+    #[serde(default = "default_prometheus_listen")]
+    pub listen: String,
+}
+
+pub fn default_prometheus_listen() -> String {
+    "127.0.0.1:9273".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1158,6 +1172,12 @@ impl BgpConfig {
             originate: Vec::new(),
             telemetry: None,
         }
+    }
+
+    /// Builder-style telemetry setter for single-expression construction.
+    pub fn with_telemetry(mut self, telemetry: TelemetryConfig) -> Self {
+        self.telemetry = Some(telemetry);
+        self
     }
 
     /// RFC 4456: Get effective cluster_id (defaults to router_id)
@@ -1581,23 +1601,38 @@ fn telemetry_config_from_block(block: &TelemetryBlock) -> TelemetryConfig {
                 namespace: emf.namespace.clone(),
             })
     };
-    TelemetryConfig { sink }
+    let prometheus = block.prometheus.as_ref().map(|prom| PrometheusConfig {
+        listen: prom
+            .listen
+            .clone()
+            .unwrap_or_else(default_prometheus_listen),
+    });
+    TelemetryConfig { sink, prometheus }
 }
 
 fn telemetry_block_from_config(cfg: &TelemetryConfig) -> TelemetryBlock {
-    match &cfg.sink {
+    let mut block = match &cfg.sink {
         Some(TelemetrySink::Json) => TelemetryBlock {
             json: true,
-            cloudwatch_emf: None,
+            ..Default::default()
         },
         Some(TelemetrySink::CloudwatchEmf { namespace }) => TelemetryBlock {
-            json: false,
             cloudwatch_emf: Some(CloudwatchEmfBlock {
                 namespace: namespace.clone(),
             }),
+            ..Default::default()
         },
         None => TelemetryBlock::default(),
-    }
+    };
+    block.prometheus = cfg.prometheus.as_ref().map(|prom| PrometheusBlock {
+        // Emit the default listen compactly as `prometheus {}`.
+        listen: if prom.listen == default_prometheus_listen() {
+            None
+        } else {
+            Some(prom.listen.clone())
+        },
+    });
+    block
 }
 
 fn bmp_config_from_block(block: &BmpServerBlock) -> BmpConfig {
@@ -2399,16 +2434,28 @@ service bgp {
             (
                 "  telemetry {\n    json {}\n  }\n",
                 Some(TelemetrySink::Json),
+                None,
             ),
             (
                 "  telemetry {\n    cloudwatch-emf {\n      namespace Rogg/Bgpgg\n    }\n  }\n",
                 Some(TelemetrySink::CloudwatchEmf {
                     namespace: "Rogg/Bgpgg".to_string(),
                 }),
+                None,
             ),
-            ("  telemetry {\n  }\n", None),
+            ("  telemetry {\n  }\n", None, None),
+            (
+                "  telemetry {\n    prometheus {}\n  }\n",
+                None,
+                Some("127.0.0.1:9273"),
+            ),
+            (
+                "  telemetry {\n    json {}\n    prometheus {\n      listen 0.0.0.0:9111\n    }\n  }\n",
+                Some(TelemetrySink::Json),
+                Some("0.0.0.0:9111"),
+            ),
         ];
-        for (block_text, expected_sink) in cases {
+        for (block_text, expected_sink, expected_listen) in cases {
             let input = format!(
                 "service bgp {{\n  asn 65000\n  router-id 1.1.1.1\n{}}}",
                 block_text
@@ -2416,6 +2463,15 @@ service bgp {
             let config = BgpConfig::from_conf_str(&input).unwrap();
             let telemetry = config.telemetry.as_ref().unwrap();
             assert_eq!(telemetry.sink, expected_sink, "input: {}", input);
+            assert_eq!(
+                telemetry
+                    .prometheus
+                    .as_ref()
+                    .map(|prom| prom.listen.as_str()),
+                expected_listen,
+                "input: {}",
+                input
+            );
 
             let rendered = config.to_conf_str();
             let reparsed = BgpConfig::from_conf_str(&rendered)
