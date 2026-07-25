@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub(crate) mod config;
+pub use config::build_telemetry_sink;
 pub(crate) mod ops;
 pub(crate) mod ops_mgmt;
 pub(crate) mod propagate;

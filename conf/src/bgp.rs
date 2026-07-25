@@ -15,11 +15,12 @@
 use crate::language::{self, Service};
 use crate::language_bgp::{
     AddPathSendMode as LangAddPathSendMode, AsPathSetBlock, BgpLsBlock, BgpServiceBody,
-    BmpServerBlock, CommunityOp, CommunityOpKind, CommunitySetBlock, Disposition,
-    ExtCommunitySetBlock, FamilyBlock, FamilyDirective, LargeCommunitySetBlock, MasklengthRange,
-    MatchClause, MatchOptionKind, MatchSetRef, MaxPrefixActionKind, MedSet, NeighborSetBlock,
-    OriginateRoute, PeerBlock, PolicyBlock, PolicyRule, PrefixListBlock, PrefixListEntry,
-    RpkiCacheBlock, RpkiValidationKind, SetClause, Setting, StatementBlock,
+    BmpServerBlock, CloudwatchEmfBlock, CommunityOp, CommunityOpKind, CommunitySetBlock,
+    Disposition, ExtCommunitySetBlock, FamilyBlock, FamilyDirective, LargeCommunitySetBlock,
+    MasklengthRange, MatchClause, MatchOptionKind, MatchSetRef, MaxPrefixActionKind, MedSet,
+    NeighborSetBlock, OriginateRoute, PeerBlock, PolicyBlock, PolicyRule, PrefixListBlock,
+    PrefixListEntry, RpkiCacheBlock, RpkiValidationKind, SetClause, Setting, StatementBlock,
+    TelemetryBlock,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -1039,6 +1040,22 @@ pub struct BgpLsConfig {
     pub instance_id: u64,
 }
 
+/// Telemetry (metric emission) configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct TelemetryConfig {
+    /// Log-emission format for metrics. None = metrics disabled.
+    #[serde(default)]
+    pub sink: Option<TelemetrySink>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TelemetrySink {
+    Json,
+    CloudwatchEmf { namespace: String },
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct BgpConfig {
@@ -1091,6 +1108,9 @@ pub struct BgpConfig {
     /// the config; bad entries log a warning and are skipped at injection time.
     #[serde(default)]
     pub originate: Vec<OriginateRoute>,
+    /// Metric emission. None = no telemetry.
+    #[serde(default)]
+    pub telemetry: Option<TelemetryConfig>,
 }
 
 fn default_listen_addr() -> String {
@@ -1136,6 +1156,7 @@ impl BgpConfig {
             enhanced_rr_stale_ttl: default_enhanced_rr_stale_ttl(),
             bgp_ls: BgpLsConfig::default(),
             originate: Vec::new(),
+            telemetry: None,
         }
     }
 
@@ -1232,6 +1253,10 @@ impl BgpConfig {
             config.bgp_ls.instance_id = bgp_ls.instance_id;
         }
 
+        if let Some(telemetry_block) = &bgp.telemetry {
+            config.telemetry = Some(telemetry_config_from_block(telemetry_block));
+        }
+
         if !has_asn {
             return Err("missing required field 'asn'".into());
         }
@@ -1320,6 +1345,7 @@ impl Default for BgpConfig {
             enhanced_rr_stale_ttl: default_enhanced_rr_stale_ttl(),
             bgp_ls: BgpLsConfig::default(),
             originate: Vec::new(),
+            telemetry: None,
         }
     }
 }
@@ -1450,6 +1476,8 @@ impl BgpConfig {
             None
         };
 
+        let telemetry = self.telemetry.as_ref().map(telemetry_block_from_config);
+
         BgpServiceBody {
             settings,
             peers,
@@ -1463,6 +1491,7 @@ impl BgpConfig {
             bmp_servers,
             rpki_caches,
             bgp_ls,
+            telemetry,
         }
     }
 }
@@ -1538,6 +1567,36 @@ fn bmp_block_from_config(cfg: &BmpConfig) -> BmpServerBlock {
     BmpServerBlock {
         address: cfg.address.clone(),
         statistics_timeout: cfg.statistics_timeout,
+    }
+}
+
+fn telemetry_config_from_block(block: &TelemetryBlock) -> TelemetryConfig {
+    let sink = if block.json {
+        Some(TelemetrySink::Json)
+    } else {
+        block
+            .cloudwatch_emf
+            .as_ref()
+            .map(|emf| TelemetrySink::CloudwatchEmf {
+                namespace: emf.namespace.clone(),
+            })
+    };
+    TelemetryConfig { sink }
+}
+
+fn telemetry_block_from_config(cfg: &TelemetryConfig) -> TelemetryBlock {
+    match &cfg.sink {
+        Some(TelemetrySink::Json) => TelemetryBlock {
+            json: true,
+            cloudwatch_emf: None,
+        },
+        Some(TelemetrySink::CloudwatchEmf { namespace }) => TelemetryBlock {
+            json: false,
+            cloudwatch_emf: Some(CloudwatchEmfBlock {
+                namespace: namespace.clone(),
+            }),
+        },
+        None => TelemetryBlock::default(),
     }
 }
 
@@ -2325,10 +2384,46 @@ service bgp {
             "log-level",
             "grpc-listen-addr",
             "listen-addr",
+            "telemetry",
         ] {
             assert!(
                 !rendered.contains(hidden),
                 "rendered config should omit `{hidden}` at default value:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_telemetry_from_conf_and_round_trip() {
+        let cases = [
+            (
+                "  telemetry {\n    json {}\n  }\n",
+                Some(TelemetrySink::Json),
+            ),
+            (
+                "  telemetry {\n    cloudwatch-emf {\n      namespace Rogg/Bgpgg\n    }\n  }\n",
+                Some(TelemetrySink::CloudwatchEmf {
+                    namespace: "Rogg/Bgpgg".to_string(),
+                }),
+            ),
+            ("  telemetry {\n  }\n", None),
+        ];
+        for (block_text, expected_sink) in cases {
+            let input = format!(
+                "service bgp {{\n  asn 65000\n  router-id 1.1.1.1\n{}}}",
+                block_text
+            );
+            let config = BgpConfig::from_conf_str(&input).unwrap();
+            let telemetry = config.telemetry.as_ref().unwrap();
+            assert_eq!(telemetry.sink, expected_sink, "input: {}", input);
+
+            let rendered = config.to_conf_str();
+            let reparsed = BgpConfig::from_conf_str(&rendered)
+                .unwrap_or_else(|err| panic!("reparse failed:\n{}\nerror: {}", rendered, err));
+            assert_eq!(
+                reparsed.telemetry, config.telemetry,
+                "rendered: {}",
+                rendered
             );
         }
     }

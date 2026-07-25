@@ -1762,6 +1762,7 @@ async fn test_ggsh_set_then_commit_persists() {
         bmp_servers: Vec::new(),
         rpki_caches: Vec::new(),
         bgp_ls: None,
+        telemetry: None,
     };
     let candidate = Root {
         services: vec![Service::Bgp(body)],

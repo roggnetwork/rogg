@@ -58,6 +58,7 @@ pub struct BgpServiceBody {
     pub bmp_servers: Vec<BmpServerBlock>,
     pub rpki_caches: Vec<RpkiCacheBlock>,
     pub bgp_ls: Option<BgpLsBlock>,
+    pub telemetry: Option<TelemetryBlock>,
 }
 
 /// Typed config setting. Values are parsed at parse time.
@@ -342,6 +343,21 @@ pub struct BmpServerBlock {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct BgpLsBlock {
     pub instance_id: u64,
+}
+
+/// `telemetry { ... }` block. Mirrors `conf::bgp::TelemetryConfig`.
+/// `json` and `cloudwatch-emf` are mutually exclusive (both render metrics to
+/// the same stdout stream); enforced at parse time.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TelemetryBlock {
+    pub json: bool,
+    pub cloudwatch_emf: Option<CloudwatchEmfBlock>,
+}
+
+/// `cloudwatch-emf { ... }` sub-block of telemetry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CloudwatchEmfBlock {
+    pub namespace: String,
 }
 
 /// `rpki-cache <ADDR> { ... }` block. Mirrors `conf::bgp::RpkiCacheConfig`.
@@ -654,6 +670,21 @@ impl fmt::Display for BgpLsBlock {
     }
 }
 
+impl fmt::Display for TelemetryBlock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "telemetry {{")?;
+        if self.json {
+            writeln!(f, "  json {{}}")?;
+        }
+        if let Some(emf) = &self.cloudwatch_emf {
+            writeln!(f, "  cloudwatch-emf {{")?;
+            writeln!(f, "    namespace {}", emf.namespace)?;
+            writeln!(f, "  }}")?;
+        }
+        write!(f, "}}")
+    }
+}
+
 impl fmt::Display for BmpServerBlock {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "bmp-server {} {{", self.address)?;
@@ -814,6 +845,15 @@ impl fmt::Display for BgpServiceBody {
                 writeln!(f)?;
             }
             for line in bgp_ls.to_string().lines() {
+                writeln!(f, "  {}", line)?;
+            }
+            first = false;
+        }
+        if let Some(telemetry) = &self.telemetry {
+            if !first {
+                writeln!(f)?;
+            }
+            for line in telemetry.to_string().lines() {
                 writeln!(f, "  {}", line)?;
             }
         }
@@ -1003,6 +1043,14 @@ pub(crate) fn parse_bgp_body(
                 skip_newlines(tokens, pos);
                 expect_open_brace(tokens, pos)?;
                 body.bgp_ls = Some(parse_bgp_ls_block(tokens, pos)?);
+            }
+            "telemetry" => {
+                if body.telemetry.is_some() {
+                    return Err(parse_err(line, "duplicate 'telemetry' block"));
+                }
+                skip_newlines(tokens, pos);
+                expect_open_brace(tokens, pos)?;
+                body.telemetry = Some(parse_telemetry_block(line, tokens, pos)?);
             }
             "originate" => {
                 let route = parse_originate_setting(tokens, pos, line)?;
@@ -1781,6 +1829,116 @@ fn parse_bgp_ls_block(tokens: &[Token], pos: &mut usize) -> Result<BgpLsBlock, P
     }
     expect_close_brace(tokens, pos)?;
     Ok(block)
+}
+
+fn parse_telemetry_block(
+    block_line: usize,
+    tokens: &[Token],
+    pos: &mut usize,
+) -> Result<TelemetryBlock, ParseError> {
+    let mut block = TelemetryBlock::default();
+    loop {
+        skip_newlines(tokens, pos);
+        match peek_kind(tokens, *pos) {
+            Some(TokenKind::CloseBrace) => break,
+            None => return Err(unexpected_eof(tokens, *pos)),
+            Some(TokenKind::OpenBrace) => {
+                return Err(parse_err(
+                    tokens[*pos].line,
+                    "unexpected '{' inside telemetry",
+                ));
+            }
+            _ => {}
+        }
+        let (key, line) = expect_word(tokens, pos)?;
+        match key.as_str() {
+            "json" => {
+                if block.json {
+                    return Err(parse_err(line, "duplicate 'json' block"));
+                }
+                skip_newlines(tokens, pos);
+                expect_open_brace(tokens, pos)?;
+                parse_telemetry_json_block(tokens, pos)?;
+                block.json = true;
+            }
+            "cloudwatch-emf" => {
+                if block.cloudwatch_emf.is_some() {
+                    return Err(parse_err(line, "duplicate 'cloudwatch-emf' block"));
+                }
+                skip_newlines(tokens, pos);
+                expect_open_brace(tokens, pos)?;
+                block.cloudwatch_emf = Some(parse_cloudwatch_emf_block(line, tokens, pos)?);
+            }
+            other => {
+                return Err(parse_err(
+                    line,
+                    format!("unknown telemetry directive '{}'", other),
+                ));
+            }
+        }
+    }
+    expect_close_brace(tokens, pos)?;
+    if block.json && block.cloudwatch_emf.is_some() {
+        return Err(parse_err(
+            block_line,
+            "'json' and 'cloudwatch-emf' are mutually exclusive",
+        ));
+    }
+    Ok(block)
+}
+
+fn parse_telemetry_json_block(tokens: &[Token], pos: &mut usize) -> Result<(), ParseError> {
+    skip_newlines(tokens, pos);
+    match peek_kind(tokens, *pos) {
+        Some(TokenKind::CloseBrace) => {}
+        None => return Err(unexpected_eof(tokens, *pos)),
+        Some(TokenKind::OpenBrace) => {
+            return Err(parse_err(tokens[*pos].line, "unexpected '{' inside json"));
+        }
+        _ => {
+            let (key, line) = expect_word(tokens, pos)?;
+            return Err(parse_err(line, format!("unknown json directive '{}'", key)));
+        }
+    }
+    expect_close_brace(tokens, pos)?;
+    Ok(())
+}
+
+fn parse_cloudwatch_emf_block(
+    block_line: usize,
+    tokens: &[Token],
+    pos: &mut usize,
+) -> Result<CloudwatchEmfBlock, ParseError> {
+    let mut namespace: Option<String> = None;
+    loop {
+        skip_newlines(tokens, pos);
+        match peek_kind(tokens, *pos) {
+            Some(TokenKind::CloseBrace) => break,
+            None => return Err(unexpected_eof(tokens, *pos)),
+            Some(TokenKind::OpenBrace) => {
+                return Err(parse_err(
+                    tokens[*pos].line,
+                    "unexpected '{' inside cloudwatch-emf",
+                ));
+            }
+            _ => {}
+        }
+        let (key, line) = expect_word(tokens, pos)?;
+        match key.as_str() {
+            "namespace" => namespace = Some(parse_scalar(&key, line, tokens, pos)?),
+            other => {
+                return Err(parse_err(
+                    line,
+                    format!("unknown cloudwatch-emf directive '{}'", other),
+                ));
+            }
+        }
+    }
+    expect_close_brace(tokens, pos)?;
+    match namespace {
+        Some(namespace) => Ok(CloudwatchEmfBlock { namespace }),
+        None => Err(parse_err(block_line, "cloudwatch-emf requires 'namespace'")),
+    }
 }
 
 fn parse_rpki_cache_block(
@@ -2775,6 +2933,27 @@ service bgp {
     instance-id 0
   }
 }",
+            // telemetry variants
+            "\
+service bgp {
+  asn 65001
+  router-id 1.1.1.1
+
+  telemetry {
+    json {}
+  }
+}",
+            "\
+service bgp {
+  asn 65001
+  router-id 1.1.1.1
+
+  telemetry {
+    cloudwatch-emf {
+      namespace Rogg/Bgpgg
+    }
+  }
+}",
         ];
         for input in cases {
             let root =
@@ -2931,6 +3110,91 @@ service bgp {
         );
         assert_eq!(second.retry_interval, Some(60));
         assert_eq!(second.expire_interval, Some(7200));
+    }
+
+    #[test]
+    fn test_parse_telemetry() {
+        let cases = [
+            (
+                "telemetry {\n  json {}\n}",
+                TelemetryBlock {
+                    json: true,
+                    cloudwatch_emf: None,
+                },
+            ),
+            (
+                "telemetry {\n  cloudwatch-emf {\n    namespace Rogg/Bgpgg\n  }\n}",
+                TelemetryBlock {
+                    json: false,
+                    cloudwatch_emf: Some(CloudwatchEmfBlock {
+                        namespace: "Rogg/Bgpgg".to_string(),
+                    }),
+                },
+            ),
+            (
+                "telemetry {\n}",
+                TelemetryBlock {
+                    json: false,
+                    cloudwatch_emf: None,
+                },
+            ),
+        ];
+        for (block_text, expected) in cases {
+            let input = format!(
+                "service bgp {{\n  asn 65001\n  router-id 1.1.1.1\n\n  {}\n}}",
+                block_text
+            );
+            let root = parse(&input).unwrap();
+            let Service::Bgp(body) = &root.services[0];
+            assert_eq!(body.telemetry.as_ref(), Some(&expected), "input: {}", input);
+        }
+    }
+
+    #[test]
+    fn test_parse_telemetry_errors() {
+        let cases = [
+            (
+                "telemetry {\n  json {}\n  cloudwatch-emf {\n    namespace X\n  }\n}",
+                "'json' and 'cloudwatch-emf' are mutually exclusive",
+            ),
+            (
+                "telemetry {\n  cloudwatch-emf {\n  }\n}",
+                "cloudwatch-emf requires 'namespace'",
+            ),
+            (
+                "telemetry {\n}\n  telemetry {\n}",
+                "duplicate 'telemetry' block",
+            ),
+            (
+                "telemetry {\n  weird 1\n}",
+                "unknown telemetry directive 'weird'",
+            ),
+            (
+                "telemetry {\n  json {\n    weird 1\n  }\n}",
+                "unknown json directive 'weird'",
+            ),
+            (
+                "telemetry {\n  cloudwatch-emf {\n    weird 1\n  }\n}",
+                "unknown cloudwatch-emf directive 'weird'",
+            ),
+            (
+                "telemetry {\n  json {}\n  json {}\n}",
+                "duplicate 'json' block",
+            ),
+        ];
+        for (block_text, expected_message) in cases {
+            let input = format!(
+                "service bgp {{\n  asn 65001\n  router-id 1.1.1.1\n  {}\n}}",
+                block_text
+            );
+            let err = parse(&input).unwrap_err();
+            assert!(
+                err.message.contains(expected_message),
+                "input: {} got: {}",
+                input,
+                err.message
+            );
+        }
     }
 
     #[test]

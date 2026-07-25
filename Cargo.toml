@@ -4,6 +4,7 @@ members = [
     "bgpgg/loadtests",
     "conf",
     "ggsh",
+    "telemetry",
 ]
 resolver = "2"
 

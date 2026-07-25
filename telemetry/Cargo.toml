@@ -1,0 +1,8 @@
+[package]
+name = "telemetry"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["std"] }

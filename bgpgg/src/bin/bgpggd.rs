@@ -14,7 +14,7 @@
 
 use bgpgg::grpc::proto::bgp_service_server::BgpServiceServer;
 use bgpgg::grpc::BgpGrpcService;
-use bgpgg::server::BgpServer;
+use bgpgg::server::{build_telemetry_sink, BgpServer};
 use clap::Parser;
 use conf::fs::{self as conf_fs, DaemonKind, StatusFile};
 use std::path::PathBuf;
@@ -79,6 +79,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_current_span(false)
         .with_span_events(FmtSpan::NONE)
         .init();
+
+    telemetry::set_sink(build_telemetry_sink(&server.config));
 
     let grpc_listener = TcpListener::bind(&server.config.grpc_listen_addr).await?;
     let grpc_bound = grpc_listener.local_addr()?;

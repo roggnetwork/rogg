@@ -471,6 +471,7 @@ impl BgpggProcess {
             enhanced_rr_stale_ttl: Some(360),
             bgp_ls: Default::default(),
             originate: Vec::new(),
+            telemetry: None,
         };
 
         config_file.write_all(config.to_conf_str().as_bytes())?;

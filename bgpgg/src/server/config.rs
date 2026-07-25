@@ -19,10 +19,12 @@
 
 use super::{parse_prefix_and_nexthop, BgpServer};
 use crate::log::error;
-use conf::bgp::BgpConfig;
+use conf::bgp::{BgpConfig, TelemetrySink};
 use conf::fs::persist_service_config;
 use conf::language::Service;
 use std::net::SocketAddr;
+use std::sync::Arc;
+use telemetry::{EmfSink, JsonSink, Sink};
 
 /// Validate, apply, persist. On apply failure, returns `Err` without
 /// reverting — operator uses `RollbackConfig` to recover.
@@ -41,6 +43,10 @@ pub(crate) async fn commit_config(
 
     let old_config = server.config.clone();
     reconfigure_all(server, &old_config, &new_config, bind_addr).await?;
+
+    if old_config.telemetry != new_config.telemetry {
+        telemetry::set_sink(build_telemetry_sink(&new_config));
+    }
 
     let service = Service::Bgp(new_config.to_bgp_service_body());
     if let Err(e) = persist_service_config(&server.config_path, service) {
@@ -77,6 +83,23 @@ async fn reconfigure_all(
     Ok(())
 }
 
+/// Map telemetry config to a metric sink. Shared by daemon startup and
+/// config commit (hot reload). The router-id is the host dimension value.
+pub fn build_telemetry_sink(config: &BgpConfig) -> Option<Arc<dyn Sink>> {
+    let host = config.router_id.to_string();
+    match config
+        .telemetry
+        .as_ref()
+        .and_then(|telemetry| telemetry.sink.as_ref())
+    {
+        Some(TelemetrySink::Json) => Some(Arc::new(JsonSink::new(host))),
+        Some(TelemetrySink::CloudwatchEmf { namespace }) => {
+            Some(Arc::new(EmfSink::new(namespace.clone(), host)))
+        }
+        None => None,
+    }
+}
+
 /// Reject changes to fields that require a daemon restart: identity (asn,
 /// router-id) and the bound listener addresses.
 fn reject_unsupported_changes(old: &BgpConfig, new: &BgpConfig) -> Result<(), String> {
@@ -93,4 +116,31 @@ fn reject_unsupported_changes(old: &BgpConfig, new: &BgpConfig) -> Result<(), St
         return Err("changing 'grpc-listen-addr' requires daemon restart".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_telemetry_sink, BgpConfig, TelemetrySink};
+    use conf::bgp::TelemetryConfig;
+
+    #[test]
+    fn test_build_telemetry_sink() {
+        let mut config = BgpConfig::default();
+        assert!(build_telemetry_sink(&config).is_none());
+
+        config.telemetry = Some(TelemetryConfig { sink: None });
+        assert!(build_telemetry_sink(&config).is_none());
+
+        config.telemetry = Some(TelemetryConfig {
+            sink: Some(TelemetrySink::Json),
+        });
+        assert!(build_telemetry_sink(&config).is_some());
+
+        config.telemetry = Some(TelemetryConfig {
+            sink: Some(TelemetrySink::CloudwatchEmf {
+                namespace: "Rogg/Bgpgg".to_string(),
+            }),
+        });
+        assert!(build_telemetry_sink(&config).is_some());
+    }
 }
