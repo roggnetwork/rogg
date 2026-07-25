@@ -33,6 +33,8 @@ use std::net::{IpAddr, SocketAddr};
 
 use std::time::{Duration, Instant};
 
+use crate::metrics;
+use telemetry::{metric, Unit};
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{mpsc, oneshot};
@@ -451,6 +453,8 @@ pub struct Peer {
     gr_state: Option<GracefulRestartState>,
     /// Accumulated route events awaiting flush to server, in temporal order.
     pending_routes: Vec<PendingRoute>,
+    /// AFI/SAFIs whose session_convergence was emitted this session.
+    convergence_reported: HashSet<AfiSafi>,
 }
 
 impl Peer {
@@ -496,6 +500,7 @@ impl Peer {
             capabilities: PeerCapabilities::default(),
             gr_state: None,
             pending_routes: Vec::new(),
+            convergence_reported: HashSet::new(),
         }
     }
 
@@ -654,6 +659,17 @@ impl Peer {
     fn disconnect(&mut self, apply_damping: bool, reason: PeerDownReason) {
         let had_connection = self.conn.is_some();
 
+        if self.established_at.is_some() {
+            metric(
+                metrics::SESSION_DOWN_COUNT,
+                1,
+                Unit::Count,
+                &[("peer", &self.addr)],
+                &[&["peer"]],
+                &[("reason", &reason)],
+            );
+        }
+
         // RFC 4724: Extract GR AFI/SAFIs if routes should be preserved
         let gr_afi_safis = if self.should_preserve_routes_with_gr(&reason) {
             self.capabilities.gr_afi_safis()
@@ -730,6 +746,20 @@ impl Peer {
 
     /// Handle End-of-RIB marker received (RFC 4724)
     pub(super) async fn handle_eor_received(&mut self, afi_safi: AfiSafi) {
+        // Convergence: Established -> EoR elapsed, with or without GR.
+        if let Some(established_at) = self.established_at {
+            if self.convergence_reported.insert(afi_safi) {
+                metric(
+                    metrics::SESSION_CONVERGENCE_MS,
+                    established_at.elapsed().as_millis() as u64,
+                    Unit::Milliseconds,
+                    &[("peer", &self.addr), ("afi_safi", &afi_safi)],
+                    &[&["peer"], &["afi_safi"], &["peer", "afi_safi"]],
+                    &[],
+                );
+            }
+        }
+
         let Some(gr_state) = &mut self.gr_state else {
             debug!(peer_ip = %self.addr, %afi_safi, "EOR received but no GR state");
             return;
@@ -969,6 +999,7 @@ pub mod test_helpers {
             capabilities: PeerCapabilities::default(),
             gr_state: None,
             pending_routes: Vec::new(),
+            convergence_reported: HashSet::new(),
         }
     }
 }

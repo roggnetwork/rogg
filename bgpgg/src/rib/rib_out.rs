@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::bgp::multiprotocol::{Afi, AfiSafi};
+use crate::rib::family_tables::FamilyTables;
 use crate::rib::{Path, Route, RouteKey};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -20,48 +21,52 @@ use std::sync::Arc;
 /// Adj-RIB-Out: Per-peer output routing table
 ///
 /// Tracks routes actually exported to a specific BGP peer.
-/// Keyed by RouteKey (IP prefix or BGP-LS NLRI), then by local_path_id.
+/// Each entry maps local_path_id -> Path.
 pub struct AdjRibOut {
-    routes: HashMap<RouteKey, HashMap<u32, Arc<Path>>>,
+    tables: FamilyTables<HashMap<u32, Arc<Path>>>,
 }
 
 impl AdjRibOut {
     pub fn new() -> Self {
         Self {
-            routes: HashMap::new(),
+            tables: FamilyTables::new(),
         }
     }
 
     /// Insert a route into the adj-rib-out.
     /// The path must have a local_path_id assigned.
     pub fn insert(&mut self, key: RouteKey, path: Arc<Path>) {
-        let path_id = path.local_path_id.expect("loc-rib path must have ID");
-        self.routes.entry(key).or_default().insert(path_id, path);
+        let Some(path_id) = path.local_path_id else {
+            return;
+        };
+        self.tables
+            .get_or_insert_with(&key, HashMap::new)
+            .insert(path_id, path);
     }
 
     /// Remove a specific path by route key and path_id.
     pub fn remove_path(&mut self, key: &RouteKey, path_id: u32) {
-        if let Some(paths) = self.routes.get_mut(key) {
+        if let Some(paths) = self.tables.get_mut(key) {
             paths.remove(&path_id);
             if paths.is_empty() {
-                self.routes.remove(key);
+                self.tables.remove(key);
             }
         }
     }
 
     /// Remove all entries for a given AFI.
     pub fn clear_afi(&mut self, afi: Afi) {
-        self.routes.retain(|key, _| key.afi_safi().afi != afi);
+        self.tables.clear_afi(afi);
     }
 
     /// Clear all routes (used on peer disconnect).
     pub fn clear(&mut self) {
-        self.routes.clear();
+        self.tables.clear();
     }
 
     /// Get all path_ids for a given route key.
     pub fn path_ids(&self, key: &RouteKey) -> Vec<u32> {
-        self.routes
+        self.tables
             .get(key)
             .map(|paths| paths.keys().copied().collect())
             .unwrap_or_default()
@@ -70,7 +75,7 @@ impl AdjRibOut {
     /// Get paths that are in adj-rib-out but not in the active set.
     /// Used to identify stale routes that need to be withdrawn.
     pub fn stale_paths(&self, key: &RouteKey, active: &[crate::rib::RoutePath]) -> Vec<Arc<Path>> {
-        let Some(paths) = self.routes.get(key) else {
+        let Some(paths) = self.tables.get(key) else {
             return vec![];
         };
 
@@ -88,23 +93,32 @@ impl AdjRibOut {
 
     /// Get all route keys for a given AFI.
     pub fn keys_for_afi(&self, afi: Afi) -> Vec<RouteKey> {
-        self.routes
-            .keys()
-            .filter(|key| key.afi_safi().afi == afi)
-            .cloned()
+        self.tables
+            .iter(None)
+            .filter(|(key, _)| key.afi_safi().afi == afi)
+            .map(|(key, _)| key)
             .collect()
     }
 
     /// Get all routes, suitable for gRPC responses.
     pub fn get_routes(&self, afi_safi: Option<AfiSafi>) -> Vec<Route> {
-        self.routes
-            .iter()
-            .filter(|(key, _)| afi_safi.is_none_or(|af| key.afi_safi() == af))
+        self.tables
+            .iter(afi_safi)
             .map(|(key, paths)| Route {
-                key: key.clone(),
+                key,
                 paths: paths.values().cloned().collect(),
             })
             .collect()
+    }
+
+    /// Return the total route count across all families.
+    pub fn route_count(&self) -> usize {
+        self.tables.len()
+    }
+
+    /// Route count per address family. Zero counts included.
+    pub fn family_counts(&self) -> [(AfiSafi, usize); 3] {
+        self.tables.family_counts()
     }
 }
 

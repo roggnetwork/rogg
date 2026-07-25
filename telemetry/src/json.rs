@@ -24,18 +24,22 @@ use serde_json::{Map, Value as JsonValue};
 use crate::{write_line, Clock, MetricRecord, Sink, SystemClock};
 
 pub struct JsonSink {
-    host: String,
     clock: Box<dyn Clock>,
     out: Mutex<Box<dyn Write + Send>>,
 }
 
 impl JsonSink {
-    pub fn new(host: impl Into<String>) -> Self {
+    pub fn new() -> Self {
         Self {
-            host: host.into(),
             clock: Box::new(SystemClock),
             out: Mutex::new(Box::new(io::stdout())),
         }
+    }
+}
+
+impl Default for JsonSink {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -59,7 +63,10 @@ impl Sink for JsonSink {
             "ts".to_string(),
             JsonValue::String(crate::rfc3339_millis(self.clock.now())),
         );
-        root.insert("host".to_string(), JsonValue::String(self.host.clone()));
+        root.insert(
+            "router_id".to_string(),
+            JsonValue::String(record.router_id.clone()),
+        );
         root.insert("metric".to_string(), JsonValue::String(record.name.clone()));
         root.insert(
             "unit".to_string(),
@@ -94,7 +101,7 @@ mod tests {
 
     fn sink_with_buffer() -> (Arc<JsonSink>, SharedBuffer) {
         let buffer = SharedBuffer::new();
-        let sink = JsonSink::new("edge03")
+        let sink = JsonSink::new()
             .with_clock(FixedClock::at_millis(1784971456789))
             .with_writer(buffer.clone());
         (Arc::new(sink), buffer)
@@ -109,12 +116,16 @@ mod tests {
                 1,
                 Unit::Count,
                 &[("peer", &"10.0.0.1")],
+                &[&["peer"]],
                 &[("code", &6)],
             );
         });
         assert_eq!(
             buffer.contents(),
-            "{\"code\":\"6\",\"dim\":{\"peer\":\"10.0.0.1\"},\"host\":\"edge03\",\"metric\":\"notification_received\",\"ts\":\"2026-07-25T09:24:16.789Z\",\"unit\":\"Count\",\"value\":1}\n"
+            concat!(
+                r#"{"code":"6","dim":{"peer":"10.0.0.1"},"metric":"notification_received","router_id":"1.1.1.1","ts":"2026-07-25T09:24:16.789Z","unit":"Count","value":1}"#,
+                "\n"
+            )
         );
     }
 
@@ -122,11 +133,14 @@ mod tests {
     fn test_output_line_no_dims() {
         let (sink, buffer) = sink_with_buffer();
         with_sink(sink, || {
-            metric("process_memory", 4096u64, Unit::Bytes, &[], &[]);
+            metric("process_memory", 4096u64, Unit::Bytes, &[], &[], &[]);
         });
         assert_eq!(
             buffer.contents(),
-            "{\"host\":\"edge03\",\"metric\":\"process_memory\",\"ts\":\"2026-07-25T09:24:16.789Z\",\"unit\":\"Bytes\",\"value\":4096}\n"
+            concat!(
+                r#"{"metric":"process_memory","router_id":"1.1.1.1","ts":"2026-07-25T09:24:16.789Z","unit":"Bytes","value":4096}"#,
+                "\n"
+            )
         );
     }
 
@@ -134,12 +148,17 @@ mod tests {
     fn test_output_line_float_and_negative() {
         let (sink, buffer) = sink_with_buffer();
         with_sink(sink, || {
-            metric("cpu_usage", 12.5, Unit::Percent, &[], &[]);
-            metric("clock_skew", -250i64, Unit::Milliseconds, &[], &[]);
+            metric("cpu_usage", 12.5, Unit::Percent, &[], &[], &[]);
+            metric("clock_skew", -250i64, Unit::Milliseconds, &[], &[], &[]);
         });
         assert_eq!(
             buffer.contents(),
-            "{\"host\":\"edge03\",\"metric\":\"cpu_usage\",\"ts\":\"2026-07-25T09:24:16.789Z\",\"unit\":\"Percent\",\"value\":12.5}\n{\"host\":\"edge03\",\"metric\":\"clock_skew\",\"ts\":\"2026-07-25T09:24:16.789Z\",\"unit\":\"Milliseconds\",\"value\":-250}\n"
+            concat!(
+                r#"{"metric":"cpu_usage","router_id":"1.1.1.1","ts":"2026-07-25T09:24:16.789Z","unit":"Percent","value":12.5}"#,
+                "\n",
+                r#"{"metric":"clock_skew","router_id":"1.1.1.1","ts":"2026-07-25T09:24:16.789Z","unit":"Milliseconds","value":-250}"#,
+                "\n"
+            )
         );
     }
 
@@ -147,7 +166,7 @@ mod tests {
     fn test_nan_value_dropped() {
         let (sink, buffer) = sink_with_buffer();
         with_sink(sink, || {
-            metric("bad_value", f64::NAN, Unit::Count, &[], &[]);
+            metric("bad_value", f64::NAN, Unit::Count, &[], &[], &[]);
         });
         assert_eq!(buffer.contents(), "");
     }

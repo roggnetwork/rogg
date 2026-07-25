@@ -16,6 +16,7 @@
 
 use crate::bgp::msg_notification::NotificationMessage;
 use crate::peer::FsmEvent;
+use std::fmt;
 
 // TODO: Add support for RFC 9069 reason 6 (Local system closed, TLV data follows)
 // for Loc-RIB monitoring support
@@ -26,4 +27,17 @@ pub enum PeerDownReason {
     RemoteNotification(NotificationMessage), // reason 3: remote sent NOTIFICATION (data = BGP NOTIFICATION PDU)
     RemoteNoNotification,                    // reason 4: remote closed, no NOTIFICATION (no data)
     PeerDeConfigured,                        // reason 5: peer de-configured (no data)
+}
+
+impl fmt::Display for PeerDownReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let reason = match self {
+            PeerDownReason::LocalNotification(_) => "local-notification",
+            PeerDownReason::LocalNoNotification(_) => "local-no-notification",
+            PeerDownReason::RemoteNotification(_) => "remote-notification",
+            PeerDownReason::RemoteNoNotification => "remote-no-notification",
+            PeerDownReason::PeerDeConfigured => "peer-deconfigured",
+        };
+        write!(formatter, "{}", reason)
+    }
 }

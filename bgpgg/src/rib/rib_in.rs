@@ -12,13 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::bgp::bgpls_nlri::LsNlri;
 use crate::bgp::multiprotocol::{Afi, AfiSafi, Safi};
-use crate::net::{IpNetwork, Ipv4Net, Ipv6Net};
+use crate::net::IpNetwork;
+use crate::rib::family_tables::FamilyTables;
 use crate::rib::types::RouteKey;
 use crate::rib::{Path, Route};
-use std::collections::HashMap;
-use std::hash::Hash;
 use std::sync::Arc;
 
 /// Adj-RIB-In: Per-peer input routing table
@@ -26,10 +24,7 @@ use std::sync::Arc;
 /// Stores routes received from a specific BGP peer before any import policy
 /// or best path selection has been applied.
 pub struct AdjRibIn {
-    // Per-AFI/SAFI tables
-    ipv4_unicast: HashMap<Ipv4Net, Route>,
-    ipv6_unicast: HashMap<Ipv6Net, Route>,
-    link_state: HashMap<LsNlri, Route>,
+    tables: FamilyTables<Route>,
 }
 
 impl Default for AdjRibIn {
@@ -41,180 +36,91 @@ impl Default for AdjRibIn {
 impl AdjRibIn {
     pub fn new() -> Self {
         AdjRibIn {
-            ipv4_unicast: HashMap::new(),
-            ipv6_unicast: HashMap::new(),
-            link_state: HashMap::new(),
+            tables: FamilyTables::new(),
         }
     }
 
+    /// Add or replace a path. Matches by remote_path_id.
     pub fn add_route(&mut self, key: RouteKey, path: Arc<Path>) {
-        match &key {
-            RouteKey::Prefix(prefix) => match prefix {
-                IpNetwork::V4(net) => Self::upsert_path(&mut self.ipv4_unicast, *net, key, path),
-                IpNetwork::V6(net) => Self::upsert_path(&mut self.ipv6_unicast, *net, key, path),
-            },
-            RouteKey::LinkState(nlri) => {
-                Self::upsert_path(&mut self.link_state, (**nlri).clone(), key, path)
-            }
+        let route = self.tables.get_or_insert_with(&key, || Route {
+            key: key.clone(),
+            paths: vec![],
+        });
+        if let Some(existing) = route
+            .paths
+            .iter_mut()
+            .find(|p| p.remote_path_id == path.remote_path_id)
+        {
+            *existing = path;
+        } else {
+            route.paths.push(path);
         }
     }
 
+    /// Remove a path by remote_path_id. Removes the Route entry if no paths remain.
     pub fn remove_route(&mut self, key: &RouteKey, remote_path_id: Option<u32>) {
-        match key {
-            RouteKey::Prefix(prefix) => match prefix {
-                IpNetwork::V4(net) => {
-                    Self::remove_path(&mut self.ipv4_unicast, net, remote_path_id)
-                }
-                IpNetwork::V6(net) => {
-                    Self::remove_path(&mut self.ipv6_unicast, net, remote_path_id)
-                }
-            },
-            RouteKey::LinkState(nlri) => {
-                Self::remove_path(&mut self.link_state, nlri, remote_path_id)
+        if let Some(route) = self.tables.get_mut(key) {
+            route.paths.retain(|p| p.remote_path_id != remote_path_id);
+            if route.paths.is_empty() {
+                self.tables.remove(key);
             }
         }
     }
 
     pub fn get_route(&self, key: &RouteKey) -> Option<&Route> {
-        match key {
-            RouteKey::Prefix(prefix) => match prefix {
-                IpNetwork::V4(net) => self.ipv4_unicast.get(net),
-                IpNetwork::V6(net) => self.ipv6_unicast.get(net),
-            },
-            RouteKey::LinkState(nlri) => self.link_state.get(nlri),
-        }
+        self.tables.get(key)
     }
 
     pub fn get_routes(&self, afi_safi: Option<AfiSafi>) -> Vec<Route> {
-        match afi_safi {
-            Some(af) => match (af.afi, af.safi) {
-                (Afi::Ipv4, Safi::Unicast) => self.ipv4_unicast.values().cloned().collect(),
-                (Afi::Ipv6, Safi::Unicast) => self.ipv6_unicast.values().cloned().collect(),
-                (Afi::LinkState, Safi::LinkState | Safi::LinkStateVpn) => {
-                    self.link_state.values().cloned().collect()
-                }
-                _ => vec![],
-            },
-            None => {
-                let mut routes = Vec::new();
-                routes.extend(self.ipv4_unicast.values().cloned());
-                routes.extend(self.ipv6_unicast.values().cloned());
-                routes.extend(self.link_state.values().cloned());
-                routes
-            }
-        }
+        self.tables
+            .iter(afi_safi)
+            .map(|(_, route)| route.clone())
+            .collect()
     }
 
     pub fn prefix_count(&self) -> usize {
-        self.ipv4_unicast.len() + self.ipv6_unicast.len() + self.link_state.len()
+        self.tables.len()
+    }
+
+    /// Route count per address family. Zero counts included.
+    pub fn family_counts(&self) -> [(AfiSafi, usize); 3] {
+        self.tables.family_counts()
     }
 
     /// Return the route count for a specific address family.
     pub fn family_count(&self, family: &AfiSafi) -> usize {
-        match (family.afi, family.safi) {
-            (Afi::Ipv4, Safi::Unicast) => self.ipv4_unicast.len(),
-            (Afi::Ipv6, Safi::Unicast) => self.ipv6_unicast.len(),
-            (Afi::LinkState, Safi::LinkState | Safi::LinkStateVpn) => self.link_state.len(),
-            _ => 0,
-        }
+        self.tables.family_count(family)
     }
 
     pub fn clear(&mut self) {
-        self.ipv4_unicast.clear();
-        self.ipv6_unicast.clear();
-        self.link_state.clear();
+        self.tables.clear();
     }
 
     pub fn clear_afi_safi(&mut self, afi_safi: AfiSafi) -> usize {
-        match (afi_safi.afi, afi_safi.safi) {
-            (Afi::Ipv4, Safi::Unicast) => {
-                let count = self.ipv4_unicast.len();
-                self.ipv4_unicast.clear();
-                count
-            }
-            (Afi::Ipv6, Safi::Unicast) => {
-                let count = self.ipv6_unicast.len();
-                self.ipv6_unicast.clear();
-                count
-            }
-            (Afi::LinkState, Safi::LinkState | Safi::LinkStateVpn) => {
-                let count = self.link_state.len();
-                self.link_state.clear();
-                count
-            }
-            _ => 0,
-        }
+        self.tables.clear_family(afi_safi)
     }
 
     /// Drain all routes for a specific AFI/SAFI, returning them as (prefix, path_id) withdrawals.
     pub fn drain_afi_safi(&mut self, afi_safi: AfiSafi) -> Vec<(IpNetwork, Option<u32>)> {
-        let table: Box<dyn Iterator<Item = (IpNetwork, Route)>> =
-            match (afi_safi.afi, afi_safi.safi) {
-                (Afi::Ipv4, Safi::Unicast) => Box::new(
-                    self.ipv4_unicast
-                        .drain()
-                        .map(|(k, v)| (IpNetwork::V4(k), v)),
-                ),
-                (Afi::Ipv6, Safi::Unicast) => Box::new(
-                    self.ipv6_unicast
-                        .drain()
-                        .map(|(k, v)| (IpNetwork::V6(k), v)),
-                ),
-                _ => return vec![],
-            };
+        if !matches!(
+            (afi_safi.afi, afi_safi.safi),
+            (Afi::Ipv4 | Afi::Ipv6, Safi::Unicast)
+        ) {
+            return vec![];
+        }
 
         let mut withdrawals = Vec::new();
-        for (prefix, route) in table {
+        for (key, route) in self.tables.drain_family(afi_safi) {
+            let RouteKey::Prefix(prefix) = key else {
+                continue;
+            };
             for path in &route.paths {
                 withdrawals.push((prefix, path.remote_path_id));
             }
         }
         withdrawals
     }
-
-    /// Add or replace a path in a table. Matches by remote_path_id.
-    fn upsert_path<K: Eq + Hash>(
-        table: &mut HashMap<K, Route>,
-        key: K,
-        route_key: RouteKey,
-        path: Arc<Path>,
-    ) {
-        if let Some(route) = table.get_mut(&key) {
-            if let Some(existing) = route
-                .paths
-                .iter_mut()
-                .find(|p| p.remote_path_id == path.remote_path_id)
-            {
-                *existing = path;
-            } else {
-                route.paths.push(path);
-            }
-        } else {
-            table.insert(
-                key,
-                Route {
-                    key: route_key,
-                    paths: vec![path],
-                },
-            );
-        }
-    }
-
-    /// Remove a path by remote_path_id. Removes the Route entry if no paths remain.
-    fn remove_path<K: Eq + Hash>(
-        table: &mut HashMap<K, Route>,
-        key: &K,
-        remote_path_id: Option<u32>,
-    ) {
-        if let Some(route) = table.get_mut(key) {
-            route.paths.retain(|p| p.remote_path_id != remote_path_id);
-            if route.paths.is_empty() {
-                table.remove(key);
-            }
-        }
-    }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

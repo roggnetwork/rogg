@@ -23,6 +23,7 @@ use crate::bgp::msg_update::NextHopAddr;
 use crate::bgp::msg_update_types::AS_TRANS;
 use crate::bgp::multiprotocol::{Afi, AfiSafi, Safi};
 use crate::log::{debug, info, warn};
+use crate::metrics;
 use crate::net::{get_interface_link_local, IpNetwork};
 use crate::peer::{BgpState, PeerCapabilities, PeerOp, PendingRoute};
 use crate::policy::{AfiSafiPolicies, PolicyResult};
@@ -34,6 +35,8 @@ use conf::bgp::{AddPathSend, MaxPrefixAction, MaxPrefixSetting, PeerConfig};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
+use std::time::Instant;
+use telemetry::{metric, Unit};
 use tokio::sync::oneshot;
 
 // Server operations sent from peer tasks to the main server loop
@@ -242,6 +245,7 @@ impl BgpServer {
         };
 
         conn.state = state;
+        conn.state_changed_at = Some(Instant::now());
         info!(%peer_ip, ?state, ?conn_type, "peer state changed");
 
         // When peer becomes Established, send BMP PeerUp and propagate all routes
@@ -557,7 +561,16 @@ impl BgpServer {
         // Send full loc-rib to the newly established peer
         let negotiated_afi_safis = capabilities.afi_safis();
         for afi_safi in &negotiated_afi_safis {
+            let start = Instant::now();
             self.resend_routes_to_peer(peer_ip, afi_safi.afi, afi_safi.safi);
+            metric(
+                metrics::INITIAL_ADVERTISEMENT_MS,
+                start.elapsed().as_millis() as u64,
+                Unit::Milliseconds,
+                &[("peer", &peer_ip), ("afi_safi", afi_safi)],
+                &[&["peer"], &["afi_safi"], &["peer", "afi_safi"]],
+                &[],
+            );
         }
 
         // Signal that loc-rib has been sent for all negotiated AFI/SAFIs
@@ -719,6 +732,7 @@ impl BgpServer {
 
     async fn handle_route_refresh(&mut self, peer_ip: IpAddr, afi: Afi, safi: Safi) {
         info!(%peer_ip, ?afi, ?safi, "processing ROUTE_REFRESH");
+        let start = Instant::now();
 
         let enhanced = self
             .peers
@@ -731,6 +745,15 @@ impl BgpServer {
         } else {
             self.resend_routes_to_peer(peer_ip, afi, safi);
         }
+
+        metric(
+            metrics::ROUTE_REFRESH_PROCESSING_MS,
+            start.elapsed().as_millis() as u64,
+            Unit::Milliseconds,
+            &[("peer", &peer_ip), ("afi_safi", &AfiSafi::new(afi, safi))],
+            &[&["peer"], &["afi_safi"], &["peer", "afi_safi"]],
+            &[],
+        );
     }
 
     /// RFC 7313: Wrap route resend with BoRR/EoRR demarcation.

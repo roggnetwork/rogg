@@ -14,12 +14,26 @@
 
 //! Metric emission for rogg daemons.
 //!
-//! `metric()` writes one line to the configured sink per call. With no sink
-//! configured (the default), calls cost one atomic load and return. Sinks render
-//! the same `MetricRecord` in different formats: `JsonSink` for plain structured
-//! lines (extracted platform-side by GCP, Datadog, etc.), `EmfSink` for CloudWatch
-//! Embedded Metric Format, `CaptureSink` for test assertions.
+//! Usage:
+//!
+//! ```ignore
+//! // setup, once per daemon:
+//! let telemetry = Telemetry::new(router_id);
+//! telemetry.set_sink(Some(Arc::new(JsonSink::new())));  // also hot reload
+//! let handle = telemetry.clone();
+//! tokio::runtime::Builder::new_multi_thread()
+//!     .on_thread_start(move || telemetry::bind(handle.clone()))
+//!     .build()?;
+//!
+//! // emit, anywhere on that runtime:
+//! metric("session_down_count", 1, Unit::Count, &[("peer", &peer_ip)], &[&["peer"]], &[]);
+//! ```
+//!
+//! `metric()` on an unbound thread or with no sink set is a no-op.
+//! Sinks: `JsonSink` (plain JSON lines), `EmfSink` (CloudWatch EMF),
+//! `CaptureSink` (test assertions).
 
+use std::cell::RefCell;
 use std::fmt::Display;
 use std::io::Write;
 use std::sync::{Arc, Mutex, RwLock};
@@ -27,9 +41,11 @@ use std::time::SystemTime;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 
+mod capture;
 mod emf;
 mod json;
 
+pub use capture::CaptureSink;
 pub use emf::EmfSink;
 pub use json::JsonSink;
 
@@ -110,14 +126,17 @@ impl From<f64> for Value {
     }
 }
 
-/// One metric emission: name, value, unit, dimensions (slice the metric by
-/// these), context (logged alongside, never extracted).
+/// One metric emission: name, value, unit, dimension values, the dimension
+/// sets to build series for, context (logged alongside, never extracted).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetricRecord {
     pub name: String,
     pub value: Value,
     pub unit: Unit,
+    /// Emitting router's ROUTER-ID, stamped by the Telemetry handle.
+    pub router_id: String,
     pub dimensions: Vec<(String, String)>,
+    pub dimension_sets: Vec<Vec<String>>,
     pub context: Vec<(String, String)>,
 }
 
@@ -125,18 +144,24 @@ pub trait Sink: Send + Sync {
     fn emit(&self, record: &MetricRecord);
 }
 
-struct Telemetry {
-    sink: RwLock<Option<Arc<dyn Sink>>>,
+/// A daemon's telemetry: its router-id and one shared sink slot. Clones
+/// share the slot, so `set_sink` through any clone is seen everywhere.
+#[derive(Clone, Default)]
+pub struct Telemetry {
+    router_id: Arc<str>,
+    sink: Arc<RwLock<Option<Arc<dyn Sink>>>>,
 }
 
 impl Telemetry {
-    const fn new() -> Self {
+    pub fn new(router_id: impl Into<Arc<str>>) -> Self {
         Self {
-            sink: RwLock::new(None),
+            router_id: router_id.into(),
+            sink: Arc::default(),
         }
     }
 
-    fn set_sink(&self, sink: Option<Arc<dyn Sink>>) {
+    /// Install, replace, or remove (None) the sink.
+    pub fn set_sink(&self, sink: Option<Arc<dyn Sink>>) {
         if let Ok(mut slot) = self.sink.write() {
             *slot = sink;
         }
@@ -147,34 +172,47 @@ impl Telemetry {
     }
 }
 
-static TELEMETRY: Telemetry = Telemetry::new();
-
-/// Install (or replace, or remove with None) the process-wide sink. Used at
-/// daemon startup and for config hot reload.
-pub fn set_sink(sink: Option<Arc<dyn Sink>>) {
-    TELEMETRY.set_sink(sink)
+thread_local! {
+    static BOUND: RefCell<Option<Telemetry>> = const { RefCell::new(None) };
 }
 
-/// Emit one metric. Dimension and context values are formatted via Display
-/// only when a sink is configured.
+/// Bind this thread to a daemon's telemetry. Call from the runtime's
+/// `on_thread_start` hook.
+pub fn bind(handle: Telemetry) {
+    BOUND.with(|slot| *slot.borrow_mut() = Some(handle));
+}
+
+/// Emit one metric to the sink bound to this thread. No-op if unbound.
+/// `dimensions` are the values; `dimension_sets` name which combinations get
+/// their own series (e.g. [["peer"], ["code"], ["peer", "code"]]).
 pub fn metric(
     name: &str,
     value: impl Into<Value>,
     unit: Unit,
     dimensions: &[(&str, &dyn Display)],
+    dimension_sets: &[&[&str]],
     context: &[(&str, &dyn Display)],
 ) {
-    let sink = match TELEMETRY.get_sink() {
-        Some(sink) => sink,
-        None => return,
+    let bound = BOUND.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .and_then(|handle| Some((handle.get_sink()?, handle.router_id.clone())))
+    });
+    let Some((sink, router_id)) = bound else {
+        return;
     };
     let record = MetricRecord {
         name: name.to_string(),
         value: value.into(),
         unit,
+        router_id: router_id.to_string(),
         dimensions: dimensions
             .iter()
             .map(|(key, val)| (key.to_string(), val.to_string()))
+            .collect(),
+        dimension_sets: dimension_sets
+            .iter()
+            .map(|set| set.iter().map(|name| name.to_string()).collect())
             .collect(),
         context: context
             .iter()
@@ -220,47 +258,15 @@ pub(crate) mod test_util {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use crate::{set_sink, Clock, MetricRecord, Sink};
+    use crate::{bind, Clock, Sink, Telemetry};
 
-    pub(crate) static SINK_LOCK: Mutex<()> = Mutex::new(());
-
-    #[derive(Clone, Default)]
-    pub(crate) struct CaptureSink {
-        records: Arc<Mutex<Vec<MetricRecord>>>,
-    }
-
-    impl CaptureSink {
-        pub(crate) fn new() -> Self {
-            Self::default()
-        }
-
-        pub(crate) fn records(&self) -> Vec<MetricRecord> {
-            self.records
-                .lock()
-                .map(|records| records.clone())
-                .unwrap_or_default()
-        }
-    }
-
-    impl Sink for CaptureSink {
-        fn emit(&self, record: &MetricRecord) {
-            if let Ok(mut records) = self.records.lock() {
-                records.push(record.clone());
-            }
-        }
-    }
-
-    /// Run `body` with `sink` installed as the process-wide sink, exactly as
-    /// production installs it. Tests that emit metrics serialize on SINK_LOCK
-    /// so they don't clobber each other's sink.
+    /// Run `body` with `sink` bound to this thread.
     pub(crate) fn with_sink<R>(sink: Arc<dyn Sink>, body: impl FnOnce() -> R) -> R {
-        let guard = SINK_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        set_sink(Some(sink));
+        let telemetry = Telemetry::new("1.1.1.1");
+        telemetry.set_sink(Some(sink));
+        bind(telemetry);
         let result = body();
-        set_sink(None);
-        drop(guard);
+        bind(Telemetry::default());
         result
     }
 
@@ -310,8 +316,8 @@ pub(crate) mod test_util {
 mod tests {
     use std::sync::Arc;
 
-    use crate::test_util::{with_sink, CaptureSink};
-    use crate::{metric, Unit, Value};
+    use crate::test_util::with_sink;
+    use crate::{metric, CaptureSink, Unit, Value};
 
     #[test]
     fn test_unit_strings() {
@@ -347,6 +353,7 @@ mod tests {
                 2u64,
                 Unit::Count,
                 &[("peer", &"10.0.0.1")],
+                &[&["peer"]],
                 &[("reason", &"test")],
             );
         });
@@ -355,10 +362,12 @@ mod tests {
         assert_eq!(records[0].name, "probe");
         assert_eq!(records[0].value, Value::UInt(2));
         assert_eq!(records[0].unit, Unit::Count);
+        assert_eq!(records[0].router_id, "1.1.1.1");
         assert_eq!(
             records[0].dimensions,
             vec![("peer".to_string(), "10.0.0.1".to_string())]
         );
+        assert_eq!(records[0].dimension_sets, vec![vec!["peer".to_string()]]);
         assert_eq!(
             records[0].context,
             vec![("reason".to_string(), "test".to_string())]

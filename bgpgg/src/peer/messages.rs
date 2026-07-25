@@ -26,11 +26,13 @@ use crate::bgp::msg_route_refresh::RouteRefreshSubtype;
 use crate::bgp::msg_update_types::MAX_2BYTE_ASN;
 use crate::bgp::multiprotocol::{Afi, AfiSafi, Safi};
 use crate::log::{debug, info, warn};
+use crate::metrics;
 use crate::server::ops::ServerOp;
 use conf::bgp::LlgrConfig;
 use std::collections::HashSet;
 use std::io;
 use std::net::Ipv4Addr;
+use telemetry::{metric, Unit};
 use tokio::io::AsyncWriteExt;
 
 use conf::bgp::{AddPathSend, PeerConfig};
@@ -422,6 +424,17 @@ impl Peer {
         let conn = self.conn.as_mut().unwrap();
         conn.tx.write_all(&notif_msg.serialize()).await?;
         self.statistics.notification_sent += 1;
+        metric(
+            metrics::NOTIFICATION_SENT_COUNT,
+            1,
+            Unit::Count,
+            &[
+                ("peer", &self.addr),
+                ("code", &notif_msg.error().error_code()),
+            ],
+            &[&["peer"], &["code"], &["peer", "code"]],
+            &[("subcode", &notif_msg.error().error_subcode())],
+        );
         warn!(peer_ip = %self.addr, error = ?notif_msg.error(), "sent NOTIFICATION");
         Ok(())
     }

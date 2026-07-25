@@ -14,7 +14,7 @@
 
 use bgpgg::grpc::proto::bgp_service_server::BgpServiceServer;
 use bgpgg::grpc::BgpGrpcService;
-use bgpgg::server::{build_telemetry_sink, BgpServer};
+use bgpgg::server::BgpServer;
 use clap::Parser;
 use conf::fs::{self as conf_fs, DaemonKind, StatusFile};
 use std::path::PathBuf;
@@ -41,8 +41,7 @@ struct Args {
     runtime_dir: Option<PathBuf>,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     let server = BgpServer::new(args.config.clone()).unwrap_or_else(|err| {
@@ -80,8 +79,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_span_events(FmtSpan::NONE)
         .init();
 
-    telemetry::set_sink(build_telemetry_sink(&server.config));
+    // Bind runtime threads to this daemon's telemetry.
+    let telemetry = server.telemetry.clone();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .on_thread_start(move || telemetry::bind(telemetry.clone()))
+        .build()?;
+    runtime.block_on(run(args, server))
+}
 
+async fn run(args: Args, server: BgpServer) -> Result<(), Box<dyn std::error::Error>> {
     let grpc_listener = TcpListener::bind(&server.config.grpc_listen_addr).await?;
     let grpc_bound = grpc_listener.local_addr()?;
 

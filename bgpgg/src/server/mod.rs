@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub(crate) mod config;
+pub(crate) mod metrics;
 pub use config::build_telemetry_sink;
 pub(crate) mod ops;
 pub(crate) mod ops_mgmt;
@@ -57,7 +58,8 @@ use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use telemetry::Telemetry;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
@@ -286,6 +288,9 @@ pub struct ConnectionState {
     pub bgp_id: Option<u32>,
     pub conn_info: Option<ConnectionInfo>,
     pub capabilities: Option<PeerCapabilities>,
+    /// When this connection entered its current state. None until the first
+    /// state change.
+    pub state_changed_at: Option<Instant>,
 }
 
 impl ConnectionState {
@@ -297,6 +302,7 @@ impl ConnectionState {
             bgp_id: None,
             conn_info: None,
             capabilities: None,
+            state_changed_at: None,
         }
     }
 
@@ -597,7 +603,13 @@ pub struct BgpServer {
     pub(crate) listener_fd: Option<i32>,
     /// Path to rogg.conf. Commits write here.
     pub(crate) config_path: PathBuf,
+    /// This daemon's telemetry. Bound to runtime threads at startup;
+    /// hot reload swaps the sink through this handle.
+    pub telemetry: Telemetry,
 }
+
+/// How often the server emits periodic metrics.
+const METRICS_INTERVAL: Duration = Duration::from_secs(60);
 
 impl BgpServer {
     /// Read and parse `rogg.conf` from `config_path`, then construct the server.
@@ -619,6 +631,9 @@ impl BgpServer {
         let policy_ctx = PolicyContext::from_config(&config)
             .map_err(|e| ServerError::IoError(io::Error::new(io::ErrorKind::InvalidData, e)))?;
 
+        let telemetry = Telemetry::new(config.router_id.to_string());
+        telemetry.set_sink(build_telemetry_sink(&config));
+
         Ok(BgpServer {
             peers: HashMap::new(),
             loc_rib: LocRib::new(LocRibConfig {
@@ -638,6 +653,7 @@ impl BgpServer {
             vrp_table: VrpTable::new(),
             listener_fd: None,
             config_path,
+            telemetry,
         })
     }
 
@@ -714,6 +730,10 @@ impl BgpServer {
         self.init_configured_rpki_caches();
         self.init_configured_originate_routes();
 
+        // Periodic metrics (peer counts, uptime, RIB sizes, memory)
+        let mut metrics_interval = tokio::time::interval(METRICS_INTERVAL);
+        metrics_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
             tokio::select! {
                 // Handle incoming BGP connections
@@ -729,6 +749,10 @@ impl BgpServer {
                 // Handle server operations from peers
                 Some(op) = self.op_rx.recv() => {
                     self.handle_server_op(op).await;
+                }
+
+                _ = metrics_interval.tick() => {
+                    self.emit_periodic_metrics();
                 }
             }
         }

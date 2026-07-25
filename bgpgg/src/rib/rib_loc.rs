@@ -480,6 +480,24 @@ impl<A: PathIdAllocator> LocRib<A> {
         self.ipv4_unicast.len() + self.ipv6_unicast.len() + self.link_state.len()
     }
 
+    /// Route count per address family this table holds. Zero counts included.
+    pub fn family_counts(&self) -> [(AfiSafi, usize); 3] {
+        [
+            (
+                AfiSafi::new(Afi::Ipv4, Safi::Unicast),
+                self.ipv4_unicast.len(),
+            ),
+            (
+                AfiSafi::new(Afi::Ipv6, Safi::Unicast),
+                self.ipv6_unicast.len(),
+            ),
+            (
+                AfiSafi::new(Afi::LinkState, Safi::LinkState),
+                self.link_state.len(),
+            ),
+        ]
+    }
+
     /// Returns true if the best path for a route key differs from the old snapshot.
     fn best_path_changed(&self, key: &RouteKey, old: Option<&Arc<Path>>) -> bool {
         match (old, self.get_best_path(key)) {

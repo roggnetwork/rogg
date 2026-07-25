@@ -60,6 +60,8 @@ use std::net::Ipv4Addr;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
+use std::sync::Arc;
+use telemetry::CaptureSink;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 pub use tokio::time::Duration;
@@ -94,6 +96,8 @@ pub struct TestServer {
     pub asn: u32,
     pub address: std::net::IpAddr, // IP address the server is bound to (no port)
     pub config: BgpConfig,
+    /// Captures every metric this server emits.
+    pub metrics: CaptureSink,
     runtime: Option<tokio::runtime::Runtime>,
     /// Tempdir backing `rogg.conf`. Held so it isn't deleted mid-test.
     config_dir: TempDir,
@@ -617,9 +621,14 @@ pub async fn start_test_server(mut config: BgpConfig) -> TestServer {
     // count is capped because cargo runs tests in parallel and each test spins
     // up several servers -- the default (one worker per core, per runtime)
     // would land us with hundreds of threads fighting for the same CPUs.
+    // Capture this server's metrics on its own runtime threads.
+    let metrics = CaptureSink::new();
+    server.telemetry.set_sink(Some(Arc::new(metrics.clone())));
+    let telemetry = server.telemetry.clone();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
+        .on_thread_start(move || telemetry::bind(telemetry.clone()))
         .build()
         .unwrap();
 
@@ -677,6 +686,7 @@ pub async fn start_test_server(mut config: BgpConfig) -> TestServer {
         asn,
         address: bind_ip,
         config: loaded_config,
+        metrics,
         runtime: Some(runtime),
         config_dir,
     }
@@ -1207,6 +1217,35 @@ where
     }
 
     panic!("{}", timeout_message);
+}
+
+/// Wait until the server emitted a metric matching name + dims, then assert
+/// the given context fields on it.
+pub async fn assert_metric(
+    server: &TestServer,
+    name: &str,
+    dimensions: &[(&str, &str)],
+    context: &[(&str, &str)],
+) {
+    poll_until(
+        || async { !server.metrics.find(name, dimensions).is_empty() },
+        &format!(
+            "{} metric with dims {:?} not emitted; captured: {:?}",
+            name,
+            dimensions,
+            server.metrics.records()
+        ),
+    )
+    .await;
+    let record = &server.metrics.find(name, dimensions)[0];
+    for (key, expected) in context {
+        let actual = record
+            .context
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.as_str());
+        assert_eq!(actual, Some(*expected), "{}: context field {}", name, key);
+    }
 }
 
 /// Generic polling helper that retries until a condition is met (default 60s timeout).

@@ -19,16 +19,41 @@
 
 use super::{parse_prefix_and_nexthop, BgpServer};
 use crate::log::error;
+use crate::metrics;
 use conf::bgp::{BgpConfig, TelemetrySink};
 use conf::fs::persist_service_config;
 use conf::language::Service;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use telemetry::{EmfSink, JsonSink, Sink};
+use std::time::Instant;
+use telemetry::{metric, EmfSink, JsonSink, Sink, Unit};
 
 /// Validate, apply, persist. On apply failure, returns `Err` without
 /// reverting — operator uses `RollbackConfig` to recover.
 pub(crate) async fn commit_config(
+    server: &mut BgpServer,
+    new_config: BgpConfig,
+    bind_addr: SocketAddr,
+) -> Result<(), String> {
+    let start = Instant::now();
+    let result = apply_config(server, new_config, bind_addr).await;
+    let name = if result.is_ok() {
+        metrics::CONFIG_RELOAD_SUCCESS_COUNT
+    } else {
+        metrics::CONFIG_RELOAD_FAILURE_COUNT
+    };
+    metric(
+        name,
+        1,
+        Unit::Count,
+        &[],
+        &[],
+        &[("duration_ms", &start.elapsed().as_millis())],
+    );
+    result
+}
+
+async fn apply_config(
     server: &mut BgpServer,
     new_config: BgpConfig,
     bind_addr: SocketAddr,
@@ -45,7 +70,7 @@ pub(crate) async fn commit_config(
     reconfigure_all(server, &old_config, &new_config, bind_addr).await?;
 
     if old_config.telemetry != new_config.telemetry {
-        telemetry::set_sink(build_telemetry_sink(&new_config));
+        server.telemetry.set_sink(build_telemetry_sink(&new_config));
     }
 
     let service = Service::Bgp(new_config.to_bgp_service_body());
@@ -84,17 +109,16 @@ async fn reconfigure_all(
 }
 
 /// Map telemetry config to a metric sink. Shared by daemon startup and
-/// config commit (hot reload). The router-id is the host dimension value.
+/// config commit (hot reload).
 pub fn build_telemetry_sink(config: &BgpConfig) -> Option<Arc<dyn Sink>> {
-    let host = config.router_id.to_string();
     match config
         .telemetry
         .as_ref()
         .and_then(|telemetry| telemetry.sink.as_ref())
     {
-        Some(TelemetrySink::Json) => Some(Arc::new(JsonSink::new(host))),
+        Some(TelemetrySink::Json) => Some(Arc::new(JsonSink::new())),
         Some(TelemetrySink::CloudwatchEmf { namespace }) => {
-            Some(Arc::new(EmfSink::new(namespace.clone(), host)))
+            Some(Arc::new(EmfSink::new(namespace.clone())))
         }
         None => None,
     }

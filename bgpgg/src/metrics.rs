@@ -1,0 +1,40 @@
+// Copyright 2026 rogg Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! Metric names emitted by bgpggd. Public contract (see ARCHITECTURE.md);
+//! renames are breaking changes. Names carry their unit suffix.
+
+// Event metrics: one emission per occurrence, at the event site.
+pub const SESSION_ESTABLISHED_COUNT: &str = "session_established_count";
+pub const SESSION_DOWN_COUNT: &str = "session_down_count";
+pub const CONNECT_RETRY_COUNT: &str = "connect_retry_count";
+pub const HOLD_TIMER_EXPIRED_COUNT: &str = "hold_timer_expired_count";
+pub const NOTIFICATION_RECEIVED_COUNT: &str = "notification_received_count";
+pub const NOTIFICATION_SENT_COUNT: &str = "notification_sent_count";
+pub const BMP_CONNECTION_DOWN_COUNT: &str = "bmp_connection_down_count";
+pub const SESSION_CONVERGENCE_MS: &str = "session_convergence_ms";
+pub const INITIAL_ADVERTISEMENT_MS: &str = "initial_advertisement_ms";
+pub const ROUTE_REFRESH_PROCESSING_MS: &str = "route_refresh_processing_ms";
+pub const CONFIG_RELOAD_SUCCESS_COUNT: &str = "config_reload_success_count";
+pub const CONFIG_RELOAD_FAILURE_COUNT: &str = "config_reload_failure_count";
+
+// Periodic gauges: emitted by the server task on a timer.
+pub const PEER_TOTAL_COUNT: &str = "peer_total_count";
+pub const SESSION_UPTIME_SEC: &str = "session_uptime_sec";
+pub const LOC_RIB_ROUTE_COUNT: &str = "loc_rib_route_count";
+pub const ADJ_RIB_IN_ROUTE_COUNT: &str = "adj_rib_in_route_count";
+pub const ADJ_RIB_IN_AFI_SAFI_ROUTE_COUNT: &str = "adj_rib_in_afi_safi_route_count";
+pub const ADJ_RIB_OUT_ROUTE_COUNT: &str = "adj_rib_out_route_count";
+pub const ADJ_RIB_OUT_AFI_SAFI_ROUTE_COUNT: &str = "adj_rib_out_afi_safi_route_count";
+pub const PROCESS_MEMORY_BYTES: &str = "process_memory_bytes";

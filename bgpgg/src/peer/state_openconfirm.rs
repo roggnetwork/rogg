@@ -14,9 +14,11 @@
 
 use super::fsm::{BgpState, FsmEvent};
 use super::{Peer, PeerError};
+use crate::metrics;
 use crate::server::ops::ServerOp;
 use crate::types::PeerDownReason;
 use std::time::Instant;
+use telemetry::{metric, Unit};
 
 impl Peer {
     /// Handle OpenConfirm state transitions (RFC 4271 Section 8.2.2).
@@ -63,6 +65,15 @@ impl Peer {
             (BgpState::Established, FsmEvent::BgpKeepaliveReceived) => {
                 self.fsm.timers.reset_hold_timer();
                 self.established_at = Some(Instant::now());
+                self.convergence_reported.clear();
+                metric(
+                    metrics::SESSION_ESTABLISHED_COUNT,
+                    1,
+                    Unit::Count,
+                    &[("peer", &self.addr)],
+                    &[&["peer"]],
+                    &[],
+                );
 
                 // Send connection info to server for BMP
                 if let (Some(sent_open), Some(received_open), Some(conn)) =
