@@ -13,9 +13,7 @@
 // limitations under the License.
 
 use super::metrics::MetricsSnapshot;
-use super::{
-    AdminState, BgpServer, BmpOp, BmpPeerIdentity, BmpPeerStats, ConnectionType, PeerInfo,
-};
+use super::{AdminState, BgpServer, BmpOp, BmpPeerIdentity, BmpPeerStats, PeerInfo};
 use crate::bgp::community;
 use crate::bgp::ext_community::is_rpki_state_community;
 use crate::bgp::msg_notification::{BgpError, CeaseSubcode, NotificationMessage};
@@ -47,18 +45,10 @@ pub enum ServerOp {
     PeerStateChanged {
         peer_ip: IpAddr,
         state: BgpState,
-        conn_type: ConnectionType,
     },
     PeerHandshakeComplete {
         peer_ip: IpAddr,
         asn: u32,
-        conn_type: ConnectionType,
-    },
-    /// Sent when peer receives OPEN message, for collision detection (RFC 4271 Section 6.8)
-    OpenReceived {
-        peer_ip: IpAddr,
-        bgp_id: u32,
-        conn_type: ConnectionType,
     },
     /// Connection info sent when peer establishes
     PeerConnectionInfo {
@@ -69,7 +59,6 @@ pub enum ServerOp {
         sent_open: OpenMessage,
         received_open: OpenMessage,
         negotiated_capabilities: PeerCapabilities,
-        conn_type: ConnectionType,
     },
     PeerUpdate {
         peer_ip: IpAddr,
@@ -79,10 +68,12 @@ pub enum ServerOp {
         peer_ip: IpAddr,
         reason: PeerDownReason,
         gr_afi_safis: Vec<AfiSafi>,
-        conn_type: ConnectionType,
     },
     /// Set peer's admin state (e.g., when max prefix limit exceeded)
-    SetAdminState { peer_ip: IpAddr, state: AdminState },
+    SetAdminState {
+        peer_ip: IpAddr,
+        state: AdminState,
+    },
     /// Route Refresh request from peer
     RouteRefresh {
         peer_ip: IpAddr,
@@ -108,13 +99,25 @@ pub enum ServerOp {
         llgr_afi_safis: Vec<(AfiSafi, u32)>,
     },
     /// RFC 9494: Long-Lived Graceful Restart stale timer expired for a peer's AFI/SAFI
-    LlgrTimerExpired { peer_ip: IpAddr, afi_safi: AfiSafi },
+    LlgrTimerExpired {
+        peer_ip: IpAddr,
+        afi_safi: AfiSafi,
+    },
     /// RFC 7313: Enhanced route refresh stale TTL expired for a peer's AFI/SAFI
-    EnhancedRrStaleTimerExpired { peer_ip: IpAddr, afi_safi: AfiSafi },
+    EnhancedRrStaleTimerExpired {
+        peer_ip: IpAddr,
+        afi_safi: AfiSafi,
+    },
     /// Graceful Restart completed for a peer (all EORs received)
-    GracefulRestartComplete { peer_ip: IpAddr, afi_safi: AfiSafi },
+    GracefulRestartComplete {
+        peer_ip: IpAddr,
+        afi_safi: AfiSafi,
+    },
     /// Server signals peer that loc-rib has been sent
-    LocalRibSent { peer_ip: IpAddr, afi_safi: AfiSafi },
+    LocalRibSent {
+        peer_ip: IpAddr,
+        afi_safi: AfiSafi,
+    },
     /// Query BMP statistics for all established peers
     GetBmpStatistics {
         response: oneshot::Sender<Vec<BmpPeerStats>>,
@@ -124,36 +127,23 @@ pub enum ServerOp {
         response: oneshot::Sender<MetricsSnapshot>,
     },
     /// VRP table update from RtrManager (RPKI).
-    VrpUpdate { added: Vec<Vrp>, removed: Vec<Vrp> },
+    VrpUpdate {
+        added: Vec<Vrp>,
+        removed: Vec<Vrp>,
+    },
 }
 
 impl BgpServer {
     pub(crate) async fn handle_server_op(&mut self, op: ServerOp) {
         match op {
-            ServerOp::PeerStateChanged {
-                peer_ip,
-                state,
-                conn_type,
-            } => {
-                self.handle_peer_state_changed(peer_ip, state, conn_type)
-                    .await;
+            ServerOp::PeerStateChanged { peer_ip, state } => {
+                self.handle_peer_state_changed(peer_ip, state).await;
             }
-            ServerOp::PeerHandshakeComplete {
-                peer_ip,
-                asn,
-                conn_type,
-            } => {
-                self.handle_peer_handshake_complete(peer_ip, asn, conn_type);
+            ServerOp::PeerHandshakeComplete { peer_ip, asn } => {
+                self.handle_peer_handshake_complete(peer_ip, asn);
             }
             ServerOp::PeerUpdate { peer_ip, routes } => {
                 self.handle_peer_update(peer_ip, routes).await;
-            }
-            ServerOp::OpenReceived {
-                peer_ip,
-                bgp_id,
-                conn_type,
-            } => {
-                self.handle_open_received(peer_ip, bgp_id, conn_type).await;
             }
             ServerOp::PeerConnectionInfo {
                 peer_ip,
@@ -163,7 +153,6 @@ impl BgpServer {
                 sent_open,
                 received_open,
                 negotiated_capabilities,
-                conn_type,
             } => {
                 self.handle_peer_connection_info(
                     peer_ip,
@@ -173,16 +162,14 @@ impl BgpServer {
                     sent_open,
                     received_open,
                     negotiated_capabilities,
-                    conn_type,
                 );
             }
             ServerOp::PeerDisconnected {
                 peer_ip,
                 reason,
                 gr_afi_safis,
-                conn_type,
             } => {
-                self.handle_peer_disconnected(peer_ip, reason, gr_afi_safis, conn_type)
+                self.handle_peer_disconnected(peer_ip, reason, gr_afi_safis)
                     .await;
             }
             ServerOp::SetAdminState { peer_ip, state } => {
@@ -218,12 +205,12 @@ impl BgpServer {
                     .await;
             }
             ServerOp::LocalRibSent { peer_ip, afi_safi } => {
-                if let Some(peer) = self.peers.get(&peer_ip) {
-                    if let Some(conn) = peer.established_conn() {
-                        if let Some(peer_tx) = &conn.peer_tx {
-                            let _ = peer_tx.send(PeerOp::LocalRibSent { afi_safi });
-                        }
-                    }
+                if let Some(peer_tx) = self
+                    .peers
+                    .get(&peer_ip)
+                    .and_then(|peer| peer.established_peer_tx())
+                {
+                    let _ = peer_tx.send(PeerOp::LocalRibSent { afi_safi });
                 }
             }
             ServerOp::GetBmpStatistics { response } => {
@@ -238,25 +225,14 @@ impl BgpServer {
         }
     }
 
-    async fn handle_peer_state_changed(
-        &mut self,
-        peer_ip: IpAddr,
-        state: BgpState,
-        conn_type: ConnectionType,
-    ) {
+    async fn handle_peer_state_changed(&mut self, peer_ip: IpAddr, state: BgpState) {
         let Some(peer) = self.peers.get_mut(&peer_ip) else {
             return;
         };
 
-        // Route to correct slot by conn_type
-        let slot = peer.slot_mut(conn_type);
-        let Some(conn) = slot.as_mut() else {
-            return;
-        };
-
-        conn.state = state;
-        conn.state_changed_at = Some(Instant::now());
-        info!(%peer_ip, ?state, ?conn_type, "peer state changed");
+        peer.conn.state = state;
+        peer.conn.state_changed_at = Some(Instant::now());
+        info!(%peer_ip, ?state, "peer state changed");
 
         // When peer becomes Established, send BMP PeerUp and propagate all routes
         if state == BgpState::Established {
@@ -264,12 +240,7 @@ impl BgpServer {
         }
     }
 
-    fn handle_peer_handshake_complete(
-        &mut self,
-        peer_ip: IpAddr,
-        asn: u32,
-        conn_type: ConnectionType,
-    ) {
+    fn handle_peer_handshake_complete(&mut self, peer_ip: IpAddr, asn: u32) {
         let is_ebgp = asn != self.config.asn;
         let Some(peer_config) = self.config.find_peer(peer_ip).cloned() else {
             return;
@@ -278,12 +249,10 @@ impl BgpServer {
         let (import_policies, export_policies) = self.build_peer_policies(&peer_config, is_ebgp);
 
         if let Some(peer) = self.peers.get_mut(&peer_ip) {
-            if let Some(conn) = peer.slot_mut(conn_type).as_mut() {
-                conn.asn = Some(asn);
-            }
+            peer.conn.asn = Some(asn);
             peer.import_policies = import_policies;
             peer.export_policies = export_policies;
-            info!(%peer_ip, asn, ?conn_type, "peer handshake complete");
+            info!(%peer_ip, asn, "peer handshake complete");
         }
     }
 
@@ -327,7 +296,6 @@ impl BgpServer {
         sent_open: OpenMessage,
         received_open: OpenMessage,
         negotiated_capabilities: PeerCapabilities,
-        conn_type: ConnectionType,
     ) {
         let local_link_local = self
             .config
@@ -336,99 +304,16 @@ impl BgpServer {
             .and_then(|iface| get_interface_link_local(iface).ok());
 
         if let Some(peer) = self.peers.get_mut(&peer_ip) {
-            if let Some(conn) = peer.slot_mut(conn_type).as_mut() {
-                conn.conn_info = Some(super::ConnectionInfo {
-                    sent_open,
-                    received_open,
-                    local_address,
-                    local_port,
-                    remote_port,
-                    local_link_local,
-                });
-                conn.capabilities = Some(negotiated_capabilities);
-            }
-        }
-    }
-
-    /// Handle OPEN message received - store BGP ID and check collision (RFC 4271 6.8)
-    async fn handle_open_received(
-        &mut self,
-        peer_ip: IpAddr,
-        bgp_id: u32,
-        conn_type: ConnectionType,
-    ) {
-        // Update BGP ID for correct slot
-        if let Some(peer) = self.peers.get_mut(&peer_ip) {
-            if let Some(conn) = peer.slot_mut(conn_type).as_mut() {
-                conn.bgp_id = Some(bgp_id);
-                info!(%peer_ip, ?conn_type, bgp_id, "stored BGP ID in slot");
-            } else {
-                crate::log::error!(%peer_ip, ?conn_type, "OpenReceived but slot is None!");
-            }
-        } else {
-            crate::log::error!(%peer_ip, "OpenReceived but peer not found!");
-        }
-
-        // Check for collision
-        self.check_collision(peer_ip).await;
-    }
-
-    /// Check and resolve connection collision per RFC 4271 6.8.
-    /// With slot-based design: outgoing and incoming are fixed slots.
-    async fn check_collision(&mut self, peer_ip: IpAddr) {
-        let Some(peer) = self.peers.get_mut(&peer_ip) else {
-            return;
-        };
-
-        // Need both slots occupied for collision
-        let (out, inc) = match (&peer.outgoing, &peer.incoming) {
-            (Some(out), Some(inc)) => (out, inc),
-            _ => return,
-        };
-
-        // Both must have BGP IDs (both received OPEN)
-        let Some(out_bgp_id) = out.bgp_id else {
-            return;
-        };
-        let Some(inc_bgp_id) = inc.bgp_id else {
-            return;
-        };
-
-        // RFC 4271 6.8: Connection initiated by higher BGP ID wins
-        // - Outgoing = we initiated -> wins if local > remote
-        // - Incoming = remote initiated -> wins if remote > local
-        // Note: inc_bgp_id and out_bgp_id are both the REMOTE's ID (from their OPEN)
-        let local_bgp_id = u32::from(self.config.router_id);
-
-        // Remote initiated (incoming) wins if remote BGP ID > local BGP ID
-        let incoming_wins = inc_bgp_id > local_bgp_id;
-
-        info!(%peer_ip, local_bgp_id, out_bgp_id, inc_bgp_id, incoming_wins, "resolving collision");
-
-        if incoming_wins {
-            // Close outgoing, keep incoming
-            if let Some(tx) = &out.peer_tx {
-                let _ = tx.send(PeerOp::CollisionLost);
-            }
-            peer.outgoing = None;
-            info!(%peer_ip, "collision: outgoing closed, incoming wins");
-
-            // If incoming was already Established, handle it now
-            if peer.incoming.as_ref().map(|c| c.state) == Some(BgpState::Established) {
-                self.handle_peer_established(peer_ip).await;
-            }
-        } else {
-            // Close incoming, keep outgoing
-            if let Some(tx) = &inc.peer_tx {
-                let _ = tx.send(PeerOp::CollisionLost);
-            }
-            peer.incoming = None;
-            info!(%peer_ip, "collision: incoming closed, outgoing wins");
-
-            // If outgoing was already Established, handle it now
-            if peer.outgoing.as_ref().map(|c| c.state) == Some(BgpState::Established) {
-                self.handle_peer_established(peer_ip).await;
-            }
+            peer.conn.bgp_id = Some(received_open.bgp_identifier);
+            peer.conn.conn_info = Some(super::ConnectionInfo {
+                sent_open,
+                received_open,
+                local_address,
+                local_port,
+                remote_port,
+                local_link_local,
+            });
+            peer.conn.capabilities = Some(negotiated_capabilities);
         }
     }
 
@@ -437,71 +322,13 @@ impl BgpServer {
         peer_ip: IpAddr,
         reason: PeerDownReason,
         gr_afi_safis: Vec<AfiSafi>,
-        conn_type: ConnectionType,
     ) {
-        // The persistent (reconnecting) task lives in the outgoing slot for
-        // active peers, the incoming slot for passive peers. A connection in
-        // the other slot is a transient accepted connection with no reconnect
-        // task -- its slot must be freed on disconnect, not kept.
-        let persistent_conn_type = if self
-            .config
-            .find_peer(peer_ip)
-            .is_some_and(|cfg| cfg.passive_mode)
-        {
-            ConnectionType::Incoming
-        } else {
-            ConnectionType::Outgoing
-        };
-
         let Some(peer) = self.peers.get_mut(&peer_ip) else {
             return;
         };
 
-        // Check if the disconnect is from the correct slot
-        let slot_exists = peer.slot(conn_type).is_some();
-        if !slot_exists {
-            // Stale disconnect from old connection. Still reconcile BMP: this can
-            // be the moment the last Established connection went away (e.g. a
-            // collision loser that had reached Established).
-            debug!(%peer_ip, ?conn_type, "ignoring stale disconnect");
-            self.bmp_peer_down_if_ended(peer_ip, reason);
-            return;
-        }
-
-        // Extract info before modifying slot
-        let was_established = peer
-            .slot(conn_type)
-            .map(|c| c.state == BgpState::Established)
-            .unwrap_or(false);
-
-        // Check if there's another connection in the other slot
-        let other_slot_active = match conn_type {
-            ConnectionType::Outgoing => peer.incoming.is_some(),
-            ConnectionType::Incoming => peer.outgoing.is_some(),
-        };
-
-        if other_slot_active {
-            // Other connection exists - just clear this slot
-            *peer.slot_mut(conn_type) = None;
-            debug!(%peer_ip, ?conn_type, "connection slot cleared, other connection active");
-            self.bmp_peer_down_if_ended(peer_ip, reason);
-            return;
-        }
-
-        // The persistent slot keeps its peer_tx and resets to Idle so the task
-        // reconnects. A transient accepted connection has no reconnect task, so
-        // clear its slot -- otherwise it lingers as a dead entry that rejects
-        // every future inbound with "incoming slot already occupied".
-        if conn_type == persistent_conn_type {
-            if let Some(conn) = peer.slot_mut(conn_type).as_mut() {
-                conn.state = BgpState::Idle;
-                conn.conn_info = None;
-                conn.asn = None;
-                conn.bgp_id = None;
-            }
-        } else {
-            *peer.slot_mut(conn_type) = None;
-        }
+        let was_established = peer.conn.state == BgpState::Established;
+        peer.conn.reset();
         peer.adj_rib_out.clear();
         peer.rr_stale_timers.cancel_all();
         // For non-GR disconnect, clear adj-rib-in and disabled AFI/SAFIs;
@@ -575,11 +402,9 @@ impl BgpServer {
         let Some(capabilities) = conn.capabilities.clone() else {
             return;
         };
-        let peer_tx = conn.peer_tx.clone();
+        let peer_tx = peer.peer_tx.clone();
 
-        // BMP PeerUp: emit once per session. Active-active peering can drive
-        // both connection slots to Established before collision resolves; only
-        // the first transition emits a PeerUp.
+        // BMP PeerUp: emit once per session.
         let peer_up = if peer.bmp_session.is_none() {
             match (conn.asn, conn.bgp_id, &conn.conn_info) {
                 (Some(asn), Some(bgp_id), Some(conn_info)) => Some((
@@ -641,12 +466,10 @@ impl BgpServer {
         }
 
         // Signal that loc-rib has been sent for all negotiated AFI/SAFIs
-        if let Some(peer_tx) = peer_tx {
-            for afi_safi in &negotiated_afi_safis {
-                let _ = peer_tx.send(PeerOp::LocalRibSent {
-                    afi_safi: *afi_safi,
-                });
-            }
+        for afi_safi in &negotiated_afi_safis {
+            let _ = peer_tx.send(PeerOp::LocalRibSent {
+                afi_safi: *afi_safi,
+            });
         }
     }
 
@@ -749,7 +572,7 @@ impl BgpServer {
         };
 
         // Extract peer_tx and BMP info before mutating
-        let peer_tx = peer.established_conn().and_then(|c| c.peer_tx.clone());
+        let peer_tx = peer.established_peer_tx().cloned();
         let bmp_info = peer
             .established_conn()
             .and_then(|c| match (c.asn, c.bgp_id) {
@@ -763,12 +586,9 @@ impl BgpServer {
         peer.disabled_afi_safi.clear();
         peer.adj_rib_out.clear();
 
-        // Reset established connection slot to Idle
-        if let Some(conn) = peer.established_conn_mut() {
-            conn.state = BgpState::Idle;
-            conn.conn_info = None;
-            conn.asn = None;
-            conn.bgp_id = None;
+        // Reset session state to Idle
+        if peer.conn.state == BgpState::Established {
+            peer.conn.reset();
         }
 
         // Tell peer to send NOTIFICATION and close TCP
@@ -828,8 +648,8 @@ impl BgpServer {
         let peer_tx = self
             .peers
             .get(&peer_ip)
-            .and_then(|p| p.established_conn())
-            .and_then(|c| c.peer_tx.clone());
+            .and_then(|p| p.established_peer_tx())
+            .cloned();
 
         let Some(peer_tx) = peer_tx else { return };
 

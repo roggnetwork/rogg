@@ -23,7 +23,6 @@ use crate::bgp::utils::ParserError;
 use crate::log::{debug, error, info};
 use crate::rib::{RouteKey, RoutePath, Withdrawal};
 use crate::server::ops::ServerOp;
-use crate::server::ConnectionType;
 use crate::types::PeerDownReason;
 use conf::bgp::{LlgrConfig, PeerConfig};
 use std::collections::{HashMap, HashSet};
@@ -326,8 +325,6 @@ pub enum PeerOp {
     LocalRibSent {
         afi_safi: crate::bgp::multiprotocol::AfiSafi,
     },
-    /// Server detected collision, this connection lost. Send NOTIFICATION and close.
-    CollisionLost,
 }
 
 /// Type of BGP session based on AS relationship
@@ -420,6 +417,12 @@ pub struct Peer {
     pub config: PeerConfig,
     /// TCP connection - None when disconnected (Idle/Connect/Active states)
     conn: Option<TcpConnection>,
+    /// Second connection during a collision (RFC 4271 6.8): the accepted
+    /// connection held while `conn` is one we dialed. Resolved in place when
+    /// the peer's OPEN arrives on either connection.
+    conn_pending: Option<TcpConnection>,
+    /// True if `conn` was initiated by us (dialed), false if accepted.
+    conn_dialed: bool,
     peer_rx: mpsc::UnboundedReceiver<PeerOp>,
     server_tx: mpsc::UnboundedSender<ServerOp>,
     /// Local router configuration
@@ -431,8 +434,6 @@ pub struct Peer {
     /// RFC 5492: peer rejected capabilities (NOTIFICATION code 2 subcode 4).
     /// When true, OPEN messages are sent without capabilities.
     capabilities_suppressed: bool,
-    /// Connection type for collision detection
-    conn_type: ConnectionType,
     /// True if ManualStop was received - disables auto-reconnect until ManualStart
     manually_stopped: bool,
     /// Timestamp when Established state was entered (for stability-based damping reset)
@@ -469,13 +470,14 @@ impl Peer {
         local_config: LocalConfig,
         config: PeerConfig,
         connect_retry_secs: u64,
-        conn_type: ConnectionType,
     ) -> Self {
         Peer {
             addr,
             port,
             fsm: Fsm::new(config.delay_open_time(), config.passive_mode),
             conn: None,
+            conn_pending: None,
+            conn_dialed: false,
             asn: None,
             bgp_id: None,
             session_type: None,
@@ -485,15 +487,16 @@ impl Peer {
             ),
             last_update_sent: None,
             pending_updates: Vec::new(),
-            config,
             peer_rx,
             server_tx,
             local_config,
             connect_retry_secs,
             consecutive_down_count: 0,
             capabilities_suppressed: false,
-            conn_type,
-            manually_stopped: false,
+            // Admin-down peers must not auto-start or accept connections
+            // until an explicit ManualStart.
+            manually_stopped: config.admin_down,
+            config,
             established_at: None,
             sent_open: None,
             received_open: None,
@@ -502,13 +505,6 @@ impl Peer {
             pending_routes: Vec::new(),
             convergence_reported: HashSet::new(),
         }
-    }
-
-    /// Attach an accepted TCP connection before the task is spawned.
-    /// Sending the stream through the channel instead would race against the
-    /// task's outbound connect attempt in Connect state.
-    pub(crate) fn set_initial_connection(&mut self, tcp_tx: OwnedWriteHalf, tcp_rx: OwnedReadHalf) {
-        self.conn = Some(TcpConnection::new(tcp_tx, tcp_rx));
     }
 
     fn pending_route_count(&self) -> usize {
@@ -678,6 +674,8 @@ impl Peer {
         };
 
         self.conn = None;
+        self.conn_pending = None;
+        self.conn_dialed = false;
         self.established_at = None;
         self.fsm.timers.stop_hold_timer();
         self.fsm.timers.stop_keepalive_timer();
@@ -711,7 +709,6 @@ impl Peer {
                 peer_ip: self.addr,
                 reason,
                 gr_afi_safis,
-                conn_type: self.conn_type,
             });
         }
     }
@@ -735,7 +732,6 @@ impl Peer {
         let _ = self.server_tx.send(ServerOp::PeerStateChanged {
             peer_ip: self.addr,
             state: self.fsm.state(),
-            conn_type: self.conn_type,
         });
     }
 
@@ -890,28 +886,30 @@ impl Peer {
     async fn handle_delay_open_message(&mut self, result: Option<Result<Vec<u8>, ParserError>>) {
         match result {
             Some(Ok(bytes)) => match Self::parse_bgp_message(&bytes, PRE_OPEN_FORMAT) {
-                Ok(BgpMessage::Open(open)) => {
-                    debug!(peer_ip = %self.addr, "OPEN received while DelayOpen running");
-                    self.fsm.timers.stop_delay_open_timer();
-                    let event = FsmEvent::BgpOpenWithDelayOpenTimer(BgpOpenParams {
-                        peer_asn: open.asn,
-                        peer_hold_time: open.hold_time,
-                        local_asn: self.local_config.asn,
-                        local_hold_time: self.local_config.hold_time,
-                        peer_capabilities: PeerCapabilities::default(),
-                        peer_bgp_id: open.bgp_identifier,
-                    });
-                    if let Err(e) = self.process_event(&event).await {
-                        error!(peer_ip = %self.addr, error = %e, "failed to send response to OPEN");
-                        self.disconnect(true, PeerDownReason::LocalNoNotification(event));
+                Ok(message) => {
+                    self.track_received_message(&message);
+                    match message {
+                        BgpMessage::Open(open) => {
+                            if self.conn_pending.is_some() {
+                                if self.local_wins_collision(&open) {
+                                    info!(peer_ip = %self.addr, "collision: dialed connection wins, dropping accepted connection");
+                                    self.conn_pending = None;
+                                } else {
+                                    // The OPEN arrived on the losing connection; discard it.
+                                    self.adopt_pending_after_collision_loss(None).await;
+                                    return;
+                                }
+                            }
+                            self.process_delay_open(open).await;
+                        }
+                        BgpMessage::Notification(notif) => {
+                            self.handle_notification_received(&notif).await;
+                        }
+                        _ => {
+                            error!(peer_ip = %self.addr, "unexpected message while waiting for DelayOpen");
+                            self.disconnect(true, PeerDownReason::RemoteNoNotification);
+                        }
                     }
-                }
-                Ok(BgpMessage::Notification(notif)) => {
-                    self.handle_notification_received(&notif).await;
-                }
-                Ok(_) => {
-                    error!(peer_ip = %self.addr, "unexpected message while waiting for DelayOpen");
-                    self.disconnect(true, PeerDownReason::RemoteNoNotification);
                 }
                 Err(e) => {
                     debug!(peer_ip = %self.addr, error = ?e, "parse error while waiting for DelayOpen");
@@ -920,16 +918,41 @@ impl Peer {
                 }
             },
             Some(Err(e)) => {
+                if self.promote_pending_after_conn_loss().await {
+                    return;
+                }
                 // Header validation error from read task
                 debug!(peer_ip = %self.addr, error = %e, "connection error while waiting for DelayOpen");
                 let event = Self::parse_error_to_fsm_event(&e);
                 self.try_process_event(&event).await;
             }
             None => {
+                if self.promote_pending_after_conn_loss().await {
+                    return;
+                }
                 // Read task exited without error - connection failure
                 debug!(peer_ip = %self.addr, "read task exited unexpectedly");
                 self.try_process_event(&FsmEvent::TcpConnectionFails).await;
             }
+        }
+    }
+
+    /// Process the peer's OPEN received while the DelayOpen timer runs
+    /// (RFC 4271 Event 20).
+    pub(super) async fn process_delay_open(&mut self, open: OpenMessage) {
+        debug!(peer_ip = %self.addr, "OPEN received while DelayOpen running");
+        self.fsm.timers.stop_delay_open_timer();
+        let event = FsmEvent::BgpOpenWithDelayOpenTimer(BgpOpenParams {
+            peer_asn: open.asn,
+            peer_hold_time: open.hold_time,
+            local_asn: self.local_config.asn,
+            local_hold_time: self.local_config.hold_time,
+            peer_capabilities: PeerCapabilities::default(),
+            peer_bgp_id: open.bgp_identifier,
+        });
+        if let Err(e) = self.process_event(&event).await {
+            error!(peer_ip = %self.addr, error = %e, "failed to send response to OPEN");
+            self.disconnect(true, PeerDownReason::LocalNoNotification(event));
         }
     }
 }
@@ -977,6 +1000,8 @@ pub mod test_helpers {
             port: addr.port(),
             fsm: Fsm::with_state(state, false),
             conn: Some(TcpConnection::new(tcp_tx, tcp_rx)),
+            conn_pending: None,
+            conn_dialed: false,
             asn: Some(65001),
             bgp_id: Some(std::net::Ipv4Addr::new(10, 0, 0, 1)),
             session_type: Some(SessionType::Ebgp),
@@ -988,7 +1013,6 @@ pub mod test_helpers {
             connect_retry_secs: 120,
             consecutive_down_count: 0,
             capabilities_suppressed: false,
-            conn_type: ConnectionType::Outgoing,
             manually_stopped: false,
             established_at: None,
             mrai_interval: Duration::from_secs(0),

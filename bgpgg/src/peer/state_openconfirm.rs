@@ -90,7 +90,6 @@ impl Peer {
                             sent_open: sent_open.clone(),
                             received_open: received_open.clone(),
                             negotiated_capabilities: self.capabilities.clone(),
-                            conn_type: self.conn_type,
                         });
                     }
                 }

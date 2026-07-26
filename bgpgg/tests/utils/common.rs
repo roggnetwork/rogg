@@ -2603,6 +2603,45 @@ impl FakePeer {
         socket.bind(local_addr).unwrap();
         socket.connect(server_addr).await.unwrap()
     }
+
+    /// Second FakePeer connection from the same IP (collision candidate).
+    pub async fn connect_again(&self, server: &TestServer) -> FakePeer {
+        FakePeer {
+            stream: Some(self.connect_to(server).await),
+            address: self.address.clone(),
+            asn: self.asn,
+            listener: None,
+            supports_4byte_asn: self.supports_4byte_asn,
+            add_path: self.add_path,
+        }
+    }
+}
+
+/// Assert the stream is closed (EOF or reset) without sending any data.
+pub async fn assert_conn_closed(stream: &mut TcpStream) {
+    use tokio::io::AsyncReadExt;
+
+    let mut buf = [0u8; 64];
+    match timeout(Duration::from_secs(2), stream.read(&mut buf)).await {
+        Ok(Ok(0)) | Ok(Err(_)) => {}
+        Ok(Ok(_)) => panic!("unexpected data on connection expected to close"),
+        Err(_) => panic!("connection was not closed"),
+    }
+}
+
+/// Wait until the server's single peer reaches the given FSM state.
+pub async fn poll_peer_state(server: &TestServer, state: BgpState) {
+    poll_until(
+        || async {
+            server
+                .client
+                .get_peers()
+                .await
+                .is_ok_and(|peers| peers.len() == 1 && peers[0].state == state as i32)
+        },
+        &format!("Timeout waiting for peer state {:?}", state),
+    )
+    .await;
 }
 
 // Build raw BGP message from components

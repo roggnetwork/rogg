@@ -61,10 +61,9 @@ impl Peer {
                             let _ = response.send(self.statistics.clone());
                         }
                         Some(PeerOp::TcpConnectionAccepted { tcp_tx, tcp_rx }) => {
-                            // RFC 4271 8.2.2: In Idle state, refuse incoming connections
-                            debug!(peer_ip = %self.addr, "connection refused in Idle state");
-                            drop(tcp_tx);
-                            drop(tcp_rx);
+                            if self.on_conn_accepted(tcp_tx, tcp_rx).await {
+                                return false;
+                            }
                         }
                         Some(_) => {}
                         None => return true,
@@ -110,10 +109,9 @@ impl Peer {
                             let _ = response.send(self.statistics.clone());
                         }
                         Some(PeerOp::TcpConnectionAccepted { tcp_tx, tcp_rx }) => {
-                            // RFC 4271 8.2.2: In Idle state, refuse incoming connections
-                            debug!(peer_ip = %self.addr, "connection refused in Idle state");
-                            drop(tcp_tx);
-                            drop(tcp_rx);
+                            if self.on_conn_accepted(tcp_tx, tcp_rx).await {
+                                return false;
+                            }
                         }
                         Some(_) => {}
                         None => return true,

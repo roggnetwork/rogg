@@ -61,7 +61,7 @@ impl BgpServer {
                 let established = peer.established_conn();
                 PeerMetricsSnapshot {
                     peer_ip: *peer_ip,
-                    state: peer.max_state().1,
+                    state: peer.conn.state,
                     uptime_secs: established
                         .and_then(|conn| conn.state_changed_at)
                         .map(|at| at.elapsed().as_secs()),
@@ -69,7 +69,7 @@ impl BgpServer {
                     adj_rib_out_total: peer.adj_rib_out.route_count(),
                     adj_rib_in_families: peer.adj_rib_in.family_counts().to_vec(),
                     adj_rib_out_families: peer.adj_rib_out.family_counts().to_vec(),
-                    peer_tx: established.and_then(|conn| conn.peer_tx.clone()),
+                    peer_tx: peer.established_peer_tx().cloned(),
                 }
             })
             .collect();
@@ -292,7 +292,7 @@ mod tests {
     use super::{emit_message_counter_metrics, PeerMetricsSnapshot};
     use crate::metrics;
     use crate::peer::{BgpState, PeerOp, PeerStatistics};
-    use crate::server::{BgpServer, ConnectionState, PeerInfo};
+    use crate::server::{BgpServer, PeerInfo};
     use conf::bgp::BgpConfig;
     use conf::testutil::TempDir;
     use std::net::{IpAddr, Ipv4Addr};
@@ -314,11 +314,10 @@ mod tests {
         telemetry::bind(server.telemetry.clone());
 
         let peer_ip: IpAddr = "10.99.99.1".parse().unwrap();
-        let mut peer_info = PeerInfo::new(false, None, None);
-        let mut conn = ConnectionState::new(None);
-        conn.state = BgpState::Established;
-        conn.state_changed_at = Some(Instant::now());
-        peer_info.outgoing = Some(conn);
+        let (peer_tx, _peer_rx) = mpsc::unbounded_channel();
+        let mut peer_info = PeerInfo::new(false, peer_tx);
+        peer_info.conn.state = BgpState::Established;
+        peer_info.conn.state_changed_at = Some(Instant::now());
         server.peers.insert(peer_ip, peer_info);
 
         let snapshot = server.collect_metrics_snapshot();

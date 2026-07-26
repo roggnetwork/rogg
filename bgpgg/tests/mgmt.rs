@@ -50,14 +50,12 @@ async fn test_add_peer_failure() {
     });
 
     // Add peer pointing at the rejecting listener
-    // Use long idle_hold_time so peer stays in Idle after failure instead of retrying
     let result = server1
         .client
         .add_peer(
             "127.0.0.1".to_string(),
             Some(SessionConfig {
                 port: Some(reject_port as u32),
-                idle_hold_time_secs: Some(3600),
                 ..Default::default()
             }),
         )
@@ -67,16 +65,17 @@ async fn test_add_peer_failure() {
     // Wait for TCP connection to be accepted (proves peer left initial Idle)
     accepted_rx.await.unwrap();
 
-    // Now safe to poll for Idle - we're past initial Idle
+    // Connection failures cycle Connect (dialing) <-> Active (listening,
+    // ConnectRetry armed); the peer never reaches Established.
     poll_until_stable(
         || async {
             let peers = server1.client.get_peers().await.unwrap();
-            peers
-                .first()
-                .is_some_and(|p| p.state == BgpState::Idle as i32)
+            peers.first().is_some_and(|p| {
+                p.state == BgpState::Active as i32 || p.state == BgpState::Connect as i32
+            })
         },
         Duration::from_millis(500),
-        "Peer should stay in Idle after connection failure",
+        "Peer should stay down after connection failure",
     )
     .await;
 }

@@ -94,20 +94,23 @@ async fn test_add_bmp_server_with_existing_peers() {
     )
     .await;
 
-    // Add an idle peer (connection will fail - address doesn't exist)
+    // Add a down peer (connection will fail - address doesn't exist)
     server
         .client
         .add_peer("192.168.255.1".to_string(), None)
         .await
         .unwrap();
 
-    // Wait for it to reach Idle state
+    // Unreachable peer cycles Connect (dialing) <-> Active (retry armed)
     poll_until(
         || async {
             let peers = server.client.get_peers().await.unwrap();
-            peers.len() == 3 && peers.iter().any(|p| p.state == BgpState::Idle as i32)
+            peers.len() == 3
+                && peers.iter().any(|p| {
+                    p.state == BgpState::Active as i32 || p.state == BgpState::Connect as i32
+                })
         },
-        "Timeout waiting for idle peer",
+        "Timeout waiting for down peer",
     )
     .await;
 

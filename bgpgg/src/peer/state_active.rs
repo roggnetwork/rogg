@@ -46,7 +46,7 @@ impl Peer {
                             self.try_process_event(&FsmEvent::ManualStop).await;
                         }
                         Some(PeerOp::TcpConnectionAccepted { tcp_tx, tcp_rx }) => {
-                            self.accept_connection(tcp_tx, tcp_rx).await;
+                            self.on_conn_accepted(tcp_tx, tcp_rx).await;
                         }
                         _ => {}
                     }
@@ -59,11 +59,15 @@ impl Peer {
     /// Does not monitor ConnectRetryTimer.
     async fn handle_active_delay_open_wait(&mut self) {
         let conn = self.conn.as_mut().expect("connection should exist");
+        let pending_rx = self.conn_pending.as_mut().map(|p| &mut p.msg_rx);
         let mut timer_interval = tokio::time::interval(Duration::from_millis(100));
 
         tokio::select! {
             result = conn.msg_rx.recv() => {
                 self.handle_delay_open_message(result).await;
+            }
+            result = async { match pending_rx { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
+                self.handle_conn_pending_msg(result).await;
             }
             _ = timer_interval.tick() => {
                 if self.fsm.timers.delay_open_timer_expired() {
@@ -80,9 +84,7 @@ impl Peer {
                         self.try_process_event(&FsmEvent::ManualStop).await;
                     }
                     Some(PeerOp::TcpConnectionAccepted { tcp_tx, tcp_rx }) => {
-                        debug!(peer_ip = %self.addr, "closing duplicate incoming connection");
-                        drop(tcp_tx);
-                        drop(tcp_rx);
+                        self.on_conn_accepted(tcp_tx, tcp_rx).await;
                     }
                     _ => {}
                 }

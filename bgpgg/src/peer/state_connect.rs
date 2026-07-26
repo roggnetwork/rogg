@@ -40,7 +40,7 @@ impl Peer {
                 match op {
                     PeerOp::TcpConnectionAccepted { tcp_tx, tcp_rx } => {
                         // Accept incoming connection when no outgoing attempt yet
-                        self.accept_connection(tcp_tx, tcp_rx).await;
+                        self.on_conn_accepted(tcp_tx, tcp_rx).await;
                         return;
                     }
                     PeerOp::ManualStop => {
@@ -78,6 +78,7 @@ impl Peer {
                             info!(peer_ip = %self.addr, "TCP connection established");
                             let (rx, tx) = stream.into_split();
                             self.conn = Some(TcpConnection::new(tx, rx));
+                            self.conn_dialed = true;
                             self.connection_ready().await;
                         }
                         Err(e) => {
@@ -96,9 +97,9 @@ impl Peer {
                             self.try_process_event(&FsmEvent::ManualStop).await;
                         }
                         Some(PeerOp::TcpConnectionAccepted { tcp_tx, tcp_rx }) => {
-                            // Drop - incoming connections handled by separate peer task
-                            drop(tcp_tx);
-                            drop(tcp_rx);
+                            // Adopt the accepted connection; the in-flight dial
+                            // is cancelled when its future drops.
+                            self.on_conn_accepted(tcp_tx, tcp_rx).await;
                         }
                         _ => {}
                     }
@@ -111,11 +112,15 @@ impl Peer {
     /// Monitors both ConnectRetryTimer and DelayOpenTimer.
     async fn handle_connect_delay_open_wait(&mut self) {
         let conn = self.conn.as_mut().expect("connection should exist");
+        let pending_rx = self.conn_pending.as_mut().map(|p| &mut p.msg_rx);
         let mut timer_interval = tokio::time::interval(Duration::from_millis(100));
 
         tokio::select! {
             result = conn.msg_rx.recv() => {
                 self.handle_delay_open_message(result).await;
+            }
+            result = async { match pending_rx { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
+                self.handle_conn_pending_msg(result).await;
             }
             _ = timer_interval.tick() => {
                 // RFC 4271 8.2.2: Check ConnectRetryTimer first (Event 9 in Connect state)
@@ -136,11 +141,7 @@ impl Peer {
                         self.try_process_event(&FsmEvent::ManualStop).await;
                     }
                     Some(PeerOp::TcpConnectionAccepted { tcp_tx, tcp_rx }) => {
-                        // This happens for collision candidates spawned by server
-                        // In DelayOpen, we already have a connection, so drop this one
-                        debug!(peer_ip = %self.addr, "dropping connection in Connect DelayOpen state");
-                        drop(tcp_tx);
-                        drop(tcp_rx);
+                        self.on_conn_accepted(tcp_tx, tcp_rx).await;
                     }
                     _ => {}
                 }
@@ -170,18 +171,12 @@ impl Peer {
                 self.fsm.timers.start_connect_retry();
             }
 
-            // RFC 4271 8.2.2 Event 18: TcpConnectionFails with DelayOpenTimer running -> Active
+            // Event 18: dial failed -> Active (listen for inbound, retry on
+            // ConnectRetry)
             (BgpState::Active, FsmEvent::TcpConnectionFails) => {
                 self.disconnect(true, PeerDownReason::RemoteNoNotification);
                 self.fsm.timers.stop_delay_open_timer();
                 self.fsm.timers.start_connect_retry();
-            }
-
-            // RFC 4271 8.2.2 Event 18: TcpConnectionFails without DelayOpenTimer -> Idle
-            (BgpState::Idle, FsmEvent::TcpConnectionFails) => {
-                self.disconnect(true, PeerDownReason::RemoteNoNotification);
-                self.fsm.timers.stop_connect_retry();
-                self.fsm.reset_connect_retry_counter();
             }
 
             // RFC 4271 Events 21, 22: BGP header/OPEN message errors -> Idle
@@ -454,9 +449,11 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(peer.state(), BgpState::Idle);
+            // Dial failed -> Active: keep listening for inbound, retry on
+            // ConnectRetry
+            assert_eq!(peer.state(), BgpState::Active);
             assert!(peer.conn.is_none());
-            assert!(peer.fsm.timers.connect_retry_started.is_none());
+            assert!(peer.fsm.timers.connect_retry_started.is_some());
             assert_eq!(peer.fsm.connect_retry_counter, 0);
         }
 

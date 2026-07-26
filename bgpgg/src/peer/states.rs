@@ -15,8 +15,10 @@
 use super::fsm::{BgpState, FsmEvent};
 use super::PeerCapabilities;
 use super::{Peer, PeerError, PeerOp, TcpConnection};
-use crate::bgp::msg::{BgpMessage, Message};
-use crate::bgp::msg_notification::{BgpError, CeaseSubcode, NotificationMessage, OpenMessageError};
+use crate::bgp::msg::{BgpMessage, Message, PRE_OPEN_FORMAT};
+use crate::bgp::msg_notification::{BgpError, CeaseSubcode, NotificationMessage};
+use crate::bgp::msg_open::OpenMessage;
+use crate::bgp::utils::ParserError;
 use crate::log::{debug, error, info};
 use crate::metrics;
 use crate::server::ops::ServerOp;
@@ -45,6 +47,7 @@ impl Peer {
                     return false;
                 }
             };
+            let pending_rx = self.conn_pending.as_mut().map(|p| &mut p.msg_rx);
 
             tokio::select! {
                 result = conn.msg_rx.recv() => {
@@ -56,6 +59,26 @@ impl Peer {
 
                             match BgpMessage::from_bytes(message_type, body, &bytes, format) {
                                 Ok(message) => {
+                                    if self.conn_pending.is_some() {
+                                        if let BgpMessage::Open(open) = &message {
+                                            // RFC 4271 6.8: resolve the collision on the
+                                            // first OPEN from the peer.
+                                            if self.local_wins_collision(open) {
+                                                info!(peer_ip = %peer_ip, "collision: dialed connection wins, dropping accepted connection");
+                                                self.conn_pending = None;
+                                            } else {
+                                                // The OPEN arrived on the losing connection; discard it.
+                                                self.adopt_pending_after_collision_loss(None).await;
+                                                continue;
+                                            }
+                                        } else if matches!(&message, BgpMessage::Notification(_)) {
+                                            // Peer closed the connection we dialed (e.g. its
+                                            // side of the collision); promote the accepted one.
+                                            self.track_received_message(&message);
+                                            self.promote_pending_after_conn_loss().await;
+                                            continue;
+                                        }
+                                    }
                                     if let Err(e) = self.handle_received_message(message).await {
                                         error!(peer_ip = %peer_ip, error = %e, "error processing message");
                                         self.disconnect(true, PeerDownReason::RemoteNoNotification);
@@ -75,6 +98,9 @@ impl Peer {
                                 }
                             }
                         }
+                        Some(Err(_)) | None if self.conn_pending.is_some() => {
+                            self.promote_pending_after_conn_loss().await;
+                        }
                         Some(Err(e)) => {
                             // Header validation error from read task
                             error!(peer_ip = %peer_ip, error = ?e, "error reading message");
@@ -93,6 +119,10 @@ impl Peer {
                             return false;
                         }
                     }
+                }
+
+                result = async { match pending_rx { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
+                    self.handle_conn_pending_msg(result).await;
                 }
 
                 Some(msg) = self.peer_rx.recv() => {
@@ -158,20 +188,7 @@ impl Peer {
                             // Ignored when connected
                         }
                         PeerOp::TcpConnectionAccepted { tcp_tx, tcp_rx } => {
-                            // Drop - server handles GR reconnection at accept time (BIRD style)
-                            drop(tcp_tx);
-                            drop(tcp_rx);
-                        }
-                        PeerOp::CollisionLost => {
-                            // Server detected collision, this connection lost
-                            info!(peer_ip = %peer_ip, "collision lost, sending NOTIFICATION and closing");
-                            let notif = NotificationMessage::new(
-                                BgpError::Cease(CeaseSubcode::ConnectionCollisionResolution),
-                                vec![],
-                            );
-                            let _ = self.send_notification(notif.clone()).await;
-                            self.disconnect(true, PeerDownReason::LocalNotification(notif));
-                            return true; // Signal shutdown
+                            self.on_conn_accepted(tcp_tx, tcp_rx).await;
                         }
                     }
                 }
@@ -204,25 +221,9 @@ impl Peer {
     }
 
     /// Handle received NOTIFICATION and generate appropriate event (Event 24 or 25).
+    /// Bookkeeping (stats, metric, RFC 5492 suppression) is done by
+    /// track_received_message; callers run that first.
     pub(super) async fn handle_notification_received(&mut self, notif: &NotificationMessage) {
-        metric(
-            metrics::NOTIFICATION_RECEIVED_COUNT,
-            1,
-            Unit::Count,
-            &[("Peer", &self.addr), ("Code", &notif.error().error_code())],
-            &[&["Peer"], &["Code"], &["Peer", "Code"]],
-            &[("Subcode", &notif.error().error_subcode())],
-        );
-
-        // RFC 5492: if peer doesn't understand capabilities, suppress them on retry.
-        if matches!(
-            notif.error(),
-            BgpError::OpenMessageError(OpenMessageError::UnsupportedOptionalParameter)
-        ) {
-            info!(peer_ip = %self.addr, "peer does not support capabilities, suppressing on retry");
-            self.capabilities_suppressed = true;
-        }
-
         let event = if notif.is_version_error() {
             debug!(peer_ip = %self.addr, "NOTIFICATION with version error received");
             FsmEvent::NotifMsgVerErr(notif.clone())
@@ -233,15 +234,202 @@ impl Peer {
         self.try_process_event(&event).await;
     }
 
-    /// Accept an incoming TCP connection in Connect or Active state.
-    pub(super) async fn accept_connection(
+    /// An inbound connection was forwarded by the server. One policy for
+    /// every FSM state; returns true if the state changed and the caller's
+    /// state loop must re-enter the run loop.
+    pub(super) async fn on_conn_accepted(
         &mut self,
         tcp_tx: OwnedWriteHalf,
         tcp_rx: OwnedReadHalf,
+    ) -> bool {
+        match self.fsm.state() {
+            BgpState::Idle => {
+                let auto_restart = self.get_idle_hold_time().is_some() && !self.manually_stopped;
+                if !auto_restart {
+                    // RFC 4271 8.2.2: refuse inbound while held down
+                    // (admin down, manual stop, auto-start disabled)
+                    debug!(peer_ip = %self.addr, "connection refused in Idle state");
+                    return false;
+                }
+                // Deviation from RFC 4271 8.2.2 (refuse all inbound in
+                // Idle): the peer's dial triggers the auto-restart early
+                // instead of being refused for the rest of the idle hold.
+                debug!(peer_ip = %self.addr, "accepting connection in Idle, restarting");
+                self.conn = Some(TcpConnection::new(tcp_tx, tcp_rx));
+                self.conn_dialed = false;
+                let event = if self.config.passive_mode {
+                    FsmEvent::AutomaticStartPassive
+                } else {
+                    FsmEvent::AutomaticStart
+                };
+                self.try_process_event(&event).await;
+                true
+            }
+            BgpState::Connect | BgpState::Active if self.conn.is_none() => {
+                debug!(peer_ip = %self.addr, "TcpConnectionAccepted");
+                self.conn = Some(TcpConnection::new(tcp_tx, tcp_rx));
+                self.conn_dialed = false;
+                self.connection_ready().await;
+                true
+            }
+            BgpState::Connect | BgpState::Active | BgpState::OpenSent
+                if self.conn_dialed && self.conn_pending.is_none() =>
+            {
+                // RFC 4271 6.8: hold as the collision candidate; the peer's
+                // first OPEN resolves it.
+                debug!(peer_ip = %self.addr, "collision: holding accepted connection");
+                self.conn_pending = Some(TcpConnection::new(tcp_tx, tcp_rx));
+                false
+            }
+            BgpState::Connect | BgpState::Active | BgpState::OpenSent | BgpState::OpenConfirm => {
+                // Candidate already held, primary is itself accepted, or past
+                // the collision window (OpenConfirm)
+                debug!(peer_ip = %self.addr, "dropping accepted connection");
+                false
+            }
+            BgpState::Established => {
+                let gr_negotiated = self
+                    .capabilities
+                    .graceful_restart
+                    .as_ref()
+                    .is_some_and(|gr| !gr.afi_safi_list.is_empty());
+                if !gr_negotiated {
+                    info!(peer_ip = %self.addr, "rejecting connection: session established without GR");
+                    Self::reject_connection(tcp_tx, tcp_rx);
+                    return false;
+                }
+                // RFC 4724: reconnect from a restarting peer. Drop the old
+                // session without NOTIFICATION so routes are preserved,
+                // adopt the new connection.
+                info!(peer_ip = %self.addr, "GR reconnection: adopting new connection");
+                self.disconnect(false, PeerDownReason::RemoteNoNotification);
+                // Established + TcpConnectionConfirmed with GR -> Connect;
+                // the attached connection goes straight to OPEN there.
+                self.try_process_event(&FsmEvent::TcpConnectionConfirmed)
+                    .await;
+                self.conn = Some(TcpConnection::new(tcp_tx, tcp_rx));
+                self.conn_dialed = false;
+                true
+            }
+        }
+    }
+
+    /// Make the pending accepted connection the primary. Returns false if
+    /// none is held.
+    fn replace_conn_with_pending(&mut self) -> bool {
+        let Some(pending) = self.conn_pending.take() else {
+            return false;
+        };
+        self.conn = Some(pending);
+        self.conn_dialed = false;
+        true
+    }
+
+    /// The dialed connection died while an accepted connection is held:
+    /// continue the handshake on the accepted connection. Returns false if
+    /// none is held.
+    pub(super) async fn promote_pending_after_conn_loss(&mut self) -> bool {
+        if !self.replace_conn_with_pending() {
+            return false;
+        }
+        info!(peer_ip = %self.addr, "dialed connection lost, promoting accepted connection");
+        if self.fsm.timers.delay_open_timer_running() {
+            self.fsm.timers.stop_delay_open_timer();
+            self.connection_ready().await;
+        } else if let Err(e) = self.send_open().await {
+            error!(peer_ip = %self.addr, error = %e, "failed to send OPEN on promoted connection");
+            self.disconnect(
+                true,
+                PeerDownReason::LocalNoNotification(FsmEvent::TcpConnectionFails),
+            );
+        }
+        true
+    }
+
+    /// The accepted connection won the collision (RFC 4271 6.8): close the
+    /// dialed connection and continue on the accepted one. `open` is the
+    /// peer's OPEN when it arrived on the accepted connection (processed on
+    /// it); None when it arrived on the losing dialed connection (discarded).
+    pub(super) async fn adopt_pending_after_collision_loss(&mut self, open: Option<OpenMessage>) {
+        info!(peer_ip = %self.addr, "collision: accepted connection wins, closing dialed connection");
+        let delay_open = self.fsm.timers.delay_open_timer_running();
+        if !delay_open {
+            // An OPEN went out on the dialed connection; close it with Cease.
+            // With DelayOpen no OPEN was sent, so it closes silently.
+            let notif = NotificationMessage::new(
+                BgpError::Cease(CeaseSubcode::ConnectionCollisionResolution),
+                vec![],
+            );
+            let _ = self.send_notification(notif).await;
+        }
+        if !self.replace_conn_with_pending() {
+            return;
+        }
+        if delay_open {
+            match open {
+                Some(open) => self.process_delay_open(open).await,
+                None => {
+                    self.fsm.timers.stop_delay_open_timer();
+                    // Restarts DelayOpen on the adopted connection
+                    self.connection_ready().await;
+                }
+            }
+        } else {
+            if let Err(e) = self.send_open().await {
+                error!(peer_ip = %self.addr, error = %e, "failed to send OPEN on promoted connection");
+                self.disconnect(
+                    true,
+                    PeerDownReason::LocalNoNotification(FsmEvent::TcpConnectionFails),
+                );
+                return;
+            }
+            if let Some(open) = open {
+                if let Err(e) = self.handle_received_message(BgpMessage::Open(open)).await {
+                    error!(peer_ip = %self.addr, error = %e, "error processing OPEN on promoted connection");
+                    self.disconnect(true, PeerDownReason::RemoteNoNotification);
+                }
+            }
+        }
+    }
+
+    /// Handle a message on the pending (accepted) connection. The peer's
+    /// OPEN resolves the collision (RFC 4271 6.8); anything else drops the
+    /// candidate.
+    pub(super) async fn handle_conn_pending_msg(
+        &mut self,
+        result: Option<Result<Vec<u8>, ParserError>>,
     ) {
-        debug!(peer_ip = %self.addr, "TcpConnectionAccepted");
-        self.conn = Some(TcpConnection::new(tcp_tx, tcp_rx));
-        self.connection_ready().await;
+        match result {
+            Some(Ok(bytes)) => match Self::parse_bgp_message(&bytes, PRE_OPEN_FORMAT) {
+                Ok(BgpMessage::Open(open)) => {
+                    if self.local_wins_collision(&open) {
+                        info!(peer_ip = %self.addr, "collision: dialed connection wins, dropping accepted connection");
+                        self.conn_pending = None;
+                    } else {
+                        self.adopt_pending_after_collision_loss(Some(open)).await;
+                    }
+                }
+                Ok(_) | Err(_) => {
+                    debug!(peer_ip = %self.addr, "dropping accepted connection: unexpected message before OPEN");
+                    self.conn_pending = None;
+                }
+            },
+            Some(Err(_)) | None => {
+                debug!(peer_ip = %self.addr, "accepted connection closed");
+                self.conn_pending = None;
+            }
+        }
+    }
+
+    /// Reject an accepted connection: send Cease/ConnectionRejected and close.
+    /// Runs in a background task to avoid blocking the peer loop on the write.
+    pub(super) fn reject_connection(mut tcp_tx: OwnedWriteHalf, tcp_rx: OwnedReadHalf) {
+        tokio::spawn(async move {
+            let notif =
+                NotificationMessage::new(BgpError::Cease(CeaseSubcode::ConnectionRejected), vec![]);
+            let _ = tcp_tx.write_all(&notif.serialize()).await;
+            drop(tcp_rx);
+        });
     }
 
     /// A TCP connection is in place (accepted, dialed, or attached at spawn):
@@ -405,7 +593,6 @@ pub(super) mod tests {
     use crate::bgp::msg_notification::{BgpError, CeaseSubcode, UpdateMessageError};
     use crate::peer::BgpOpenParams;
     use crate::peer::{BgpState, Fsm, LocalConfig, PeerStatistics, SessionType};
-    use crate::server::ConnectionType;
     use conf::bgp::PeerConfig;
     use std::collections::HashSet;
     use std::net::SocketAddr;
@@ -451,6 +638,8 @@ pub(super) mod tests {
             fsm: Fsm::with_state(state, false),
             convergence_reported: HashSet::new(),
             conn: Some(TcpConnection::new(tcp_tx, tcp_rx)),
+            conn_pending: None,
+            conn_dialed: false,
             asn: Some(65001),
             bgp_id: Some(std::net::Ipv4Addr::new(10, 0, 0, 1)),
             session_type: Some(SessionType::Ebgp),
@@ -462,7 +651,6 @@ pub(super) mod tests {
             connect_retry_secs: 120,
             consecutive_down_count: 0,
             capabilities_suppressed: false,
-            conn_type: ConnectionType::Outgoing,
             manually_stopped: false,
             established_at: None,
             mrai_interval: Duration::from_secs(0),

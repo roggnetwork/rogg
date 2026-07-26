@@ -345,29 +345,16 @@ impl Peer {
                                 }
                             }
                         }
-                        PeerOp::CollisionLost => {
-                            // Late collision resolution (RFC 4271 6.8): this
-                            // connection reached Established before the collision
-                            // was resolved, and lost. Tear it down with Cease so
-                            // it does not linger until its TCP dies. The winning
-                            // connection keeps the peer's routes; the server has
-                            // already cleared this slot, so the resulting
-                            // disconnect is a no-op stale disconnect.
-                            info!(peer_ip = %peer_ip, "collision lost in Established, sending NOTIFICATION and closing");
-                            let notif = NotificationMessage::new(
-                                BgpError::Cease(CeaseSubcode::ConnectionCollisionResolution),
-                                Vec::new(),
-                            );
-                            let _ = self.send_notification(notif.clone()).await;
-                            self.disconnect(true, PeerDownReason::LocalNotification(notif));
-                            return true;
-                        }
                         PeerOp::ManualStart
                         | PeerOp::ManualStartPassive
                         | PeerOp::AutomaticStart
-                        | PeerOp::AutomaticStartPassive
-                        | PeerOp::TcpConnectionAccepted { .. } => {
+                        | PeerOp::AutomaticStartPassive => {
                             // Ignored when connected
+                        }
+                        PeerOp::TcpConnectionAccepted { tcp_tx, tcp_rx } => {
+                            if self.on_conn_accepted(tcp_tx, tcp_rx).await {
+                                return false;
+                            }
                         }
                     }
                 }

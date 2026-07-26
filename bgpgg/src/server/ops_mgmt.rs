@@ -588,7 +588,7 @@ impl BgpServer {
         };
 
         entry.admin_state = AdminState::Down;
-        entry.send_to_all(|| PeerOp::ManualStop);
+        let _ = entry.peer_tx.send(PeerOp::ManualStop);
 
         if let Some(cfg) = self.config.find_peer_mut(peer_ip) {
             cfg.admin_down = true;
@@ -624,13 +624,11 @@ impl BgpServer {
         };
 
         entry.admin_state = AdminState::Up;
-        // RFC 4271: ManualStart for admin-enabled peers (send to all tasks)
-        entry.send_to_all(|| {
-            if passive {
-                PeerOp::ManualStartPassive
-            } else {
-                PeerOp::ManualStart
-            }
+        // RFC 4271: ManualStart for admin-enabled peers
+        let _ = entry.peer_tx.send(if passive {
+            PeerOp::ManualStartPassive
+        } else {
+            PeerOp::ManualStart
         });
 
         if let Some(cfg) = self.config.find_peer_mut(peer_ip) {
@@ -728,12 +726,7 @@ impl BgpServer {
         };
 
         // Hard reset only applies to the established connection
-        let Some(conn) = peer.established_conn() else {
-            let _ = response.send(Err(format!("peer {} has no active task", peer_ip)));
-            return;
-        };
-
-        let Some(peer_tx) = &conn.peer_tx else {
+        let Some(peer_tx) = peer.established_peer_tx() else {
             let _ = response.send(Err(format!("peer {} has no active task", peer_ip)));
             return;
         };
@@ -759,8 +752,7 @@ impl BgpServer {
         if let Some(peer_tx) = self
             .peers
             .get(&peer_ip)
-            .and_then(|p| p.established_conn())
-            .and_then(|c| c.peer_tx.as_ref())
+            .and_then(|p| p.established_peer_tx())
         {
             for afi_safi in afi_safis {
                 let _ = peer_tx.send(PeerOp::SendRouteRefresh {
@@ -792,13 +784,9 @@ impl BgpServer {
         &self,
         peer_info: &PeerInfo,
     ) -> Result<Vec<AfiSafi>, String> {
-        let conn = peer_info
-            .established_conn()
+        let peer_tx = peer_info
+            .established_peer_tx()
             .ok_or_else(|| "peer not established".to_string())?;
-        let peer_tx = conn
-            .peer_tx
-            .as_ref()
-            .ok_or_else(|| "peer task not available".to_string())?;
 
         let (tx, rx) = oneshot::channel();
         peer_tx
@@ -907,7 +895,7 @@ impl BgpServer {
             .peers
             .iter()
             .map(|(addr, entry)| {
-                let (asn, state) = entry.max_state();
+                let (asn, state) = (entry.conn.asn, entry.conn.state);
                 let cfg = self.config.find_peer(*addr);
                 GetPeersResponse {
                     address: addr.to_string(),
@@ -946,7 +934,7 @@ impl BgpServer {
 
         let mut stats = entry.get_statistics().await.unwrap_or_default();
         stats.adj_rib_in_count = entry.adj_rib_in.prefix_count() as u64;
-        let (asn, state) = entry.max_state();
+        let (asn, state) = (entry.conn.asn, entry.conn.state);
 
         let _ = response.send(Some(GetPeerResponse {
             address: addr,
@@ -1024,7 +1012,7 @@ impl BgpServer {
 
     fn handle_get_peers_stream(&self, tx: mpsc::UnboundedSender<GetPeersResponse>) {
         for (addr, entry) in self.peers.iter() {
-            let (asn, state) = entry.max_state();
+            let (asn, state) = (entry.conn.asn, entry.conn.state);
             let cfg = self.config.find_peer(*addr);
             let peer = GetPeersResponse {
                 address: addr.to_string(),

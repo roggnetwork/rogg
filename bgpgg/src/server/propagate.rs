@@ -76,9 +76,7 @@ impl BgpServer {
                 continue;
             }
 
-            let Some(peer_tx) = conn.peer_tx.clone() else {
-                continue;
-            };
+            let peer_tx = entry.peer_tx.clone();
             let Some(capabilities) = conn.capabilities.clone() else {
                 continue;
             };
@@ -140,13 +138,11 @@ impl BgpServer {
             local_link_local,
             negotiated_afi_safis,
         ) = {
+            let peer_tx = peer_info.peer_tx.clone();
             let Some(conn) = peer_info.established_conn() else {
                 return;
             };
             let Some(peer_asn) = conn.asn else {
-                return;
-            };
-            let Some(peer_tx) = conn.peer_tx.clone() else {
                 return;
             };
             let Some(capabilities) = conn.capabilities.clone() else {

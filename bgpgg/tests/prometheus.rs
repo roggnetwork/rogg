@@ -17,6 +17,7 @@
 mod utils;
 pub use utils::*;
 
+use bgpgg::grpc::proto::{BgpState, SessionConfig};
 use conf::bgp::{BgpConfig, PrometheusConfig, TelemetryConfig};
 use std::net::Ipv4Addr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -83,7 +84,21 @@ async fn test_prometheus_scrape() {
         90,
     ))
     .await;
-    peer_servers(&server1, &server2).await;
+
+    // server1 passive, server2 dials: a single connection with no collision,
+    // so the OPEN/NOTIFICATION counters are deterministic.
+    server1
+        .add_peer_with_config(
+            &server2,
+            SessionConfig {
+                passive_mode: Some(true),
+                ..Default::default()
+            },
+        )
+        .await;
+    server2.add_peer(&server1).await;
+    apply_permit_all_routes(&server1, &server2).await;
+    poll_peers(&server1, vec![server2.to_peer(BgpState::Established)]).await;
 
     let response = scrape(scrape_port, "/metrics").await.expect("scrape");
     assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");

@@ -1,5 +1,0 @@
-asn: 65000
-listen-addr: "127.0.0.1:1790"
-router-id: "1.1.1.1"
-grpc-listen-addr: "[::1]:50051"
-log-level: "info"
