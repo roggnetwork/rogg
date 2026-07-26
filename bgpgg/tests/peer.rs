@@ -209,9 +209,10 @@ async fn test_peer_up() {
     })
     .await;
 
-    // Poll until OPEN exchanged and at least one keepalive cycle completed
+    // Poll until OPEN exchanged and at least one keepalive cycle completed.
+    // open_sent is not exact: the collision loser sends OPEN on the dialed
+    // connection and again on the promoted one.
     let expected = ExpectedStats {
-        open_sent: Some(1),
         open_received: Some(1),
         min_keepalive_sent: Some(2),
         min_keepalive_received: Some(2),
@@ -873,9 +874,9 @@ async fn test_ipv6_peering() {
     )
     .await;
 
-    // Verify keepalive exchange works
+    // Verify keepalive exchange works. open_sent is not exact: the collision
+    // loser sends OPEN on the dialed connection and again on the promoted one.
     let expected = ExpectedStats {
-        open_sent: Some(1),
         open_received: Some(1),
         min_keepalive_sent: Some(2),
         min_keepalive_received: Some(2),
@@ -1676,8 +1677,9 @@ async fn test_graceful_restart_fbit_zero_clears_stale() {
     .await;
 }
 
-/// RFC 4724: GR reconnection - when outgoing is Established with GR and new incoming
-/// connection arrives, close old session and accept new (BIRD style).
+/// RFC 4724: GR reconnection - when the session is Established with GR and a
+/// new incoming connection arrives, the peer task adopts it: the old session
+/// is closed without NOTIFICATION so routes are preserved.
 #[tokio::test]
 async fn test_gr_reconnection_accepts_new_connection() {
     // FakePeer listens - server will connect outgoing
@@ -1713,6 +1715,32 @@ async fn test_gr_reconnection_accepts_new_connection() {
     // Verify Established
     poll_peers(&server, vec![peer.to_peer(BgpState::Established)]).await;
 
+    // FakePeer announces a route; it must survive the GR reconnect
+    apply_import_accept_all(&server, "127.0.0.2").await;
+    let update = build_raw_update(
+        &[],
+        &[
+            &attr_origin_igp(),
+            &attr_as_path_2byte(vec![65002]),
+            &attr_next_hop(Ipv4Addr::new(192, 168, 1, 1)),
+        ],
+        &[24, 10, 0, 0], // 10.0.0.0/24
+        None,
+    );
+    peer.send_raw(&update).await;
+    poll_until(
+        || async {
+            server
+                .client
+                .list_routes(ListRoutesRequest::default())
+                .await
+                .ok()
+                .is_some_and(|r| r.len() == 1 && route_has_prefix(&r[0], "10.0.0.0/24"))
+        },
+        "route should be in RIB",
+    )
+    .await;
+
     // Now FakePeer "restarts" - connects to server as new incoming connection
     // This simulates peer restart where old TCP is stale but server doesn't know yet
     let mut reconnecting_peer = FakePeer::connect(Some("127.0.0.2"), &server).await;
@@ -1736,10 +1764,18 @@ async fn test_gr_reconnection_accepts_new_connection() {
         vec![reconnecting_peer.to_peer(BgpState::Established)],
     )
     .await;
+
+    // RFC 4724: the route survived the reconnect (retained as stale)
+    let routes = server
+        .client
+        .list_routes(ListRoutesRequest::default())
+        .await
+        .unwrap();
+    assert_eq!(routes.len(), 1, "route should survive GR reconnection");
 }
 
-/// When outgoing is Established without GR capability, new incoming connection
-/// should be rejected to protect the existing session.
+/// When the session is Established without GR capability, a new incoming
+/// connection is rejected to protect the existing session.
 #[tokio::test]
 async fn test_reject_incoming_when_established_no_gr() {
     // FakePeer listens - server will connect outgoing

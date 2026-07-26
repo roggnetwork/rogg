@@ -817,7 +817,9 @@ async fn test_unknown_optional_attribute_handling(
 
     let mut server1 = FakePeer::connect(None, server2).await;
     server1
-        .handshake_open(65002, std::net::Ipv4Addr::new(1, 1, 1, 1), 300)
+        // iBGP with server2: router-id must differ from server2's own
+        // (RFC 6286 2.2 rejects an internal peer presenting our identifier)
+        .handshake_open(65002, std::net::Ipv4Addr::new(9, 9, 9, 9), 300)
         .await;
     server1.handshake_keepalive().await;
 

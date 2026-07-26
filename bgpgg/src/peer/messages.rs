@@ -207,6 +207,20 @@ fn create_open_message(
 }
 
 impl Peer {
+    /// RFC 4271 6.8 / RFC 6286 2.3: true if the connection we initiated wins
+    /// the collision. Higher BGP Identifier wins; on equal IDs, higher AS wins.
+    pub(super) fn local_wins_collision(&self, open: &OpenMessage) -> bool {
+        let local_id = u32::from(self.local_config.bgp_id);
+        let remote_id = open.bgp_identifier;
+        if local_id != remote_id {
+            return local_id > remote_id;
+        }
+        let remote_asn = extract_capabilities(open)
+            .four_octet_asn
+            .unwrap_or(open.asn);
+        self.local_config.asn > remote_asn
+    }
+
     fn build_open_message(&self) -> OpenMessage {
         if self.capabilities_suppressed {
             // RFC 5492: peer rejected capabilities, send bare OPEN.
@@ -240,15 +254,37 @@ impl Peer {
         Ok(())
     }
 
+    /// RFC 6286 2.2: reject an OPEN from an internal peer carrying our own
+    /// BGP Identifier (duplicate router ID).
+    async fn validate_peer_bgp_id(&mut self, params: &BgpOpenParams) -> Result<(), io::Error> {
+        if params.peer_asn == self.local_config.asn
+            && params.peer_bgp_id == u32::from(self.local_config.bgp_id)
+        {
+            warn!(peer_ip = %self.addr, bgp_id = %self.local_config.bgp_id,
+                  "rejecting session: internal peer presented our own BGP Identifier (duplicate router ID)");
+            let notif = NotificationMessage::new(
+                BgpError::OpenMessageError(OpenMessageError::BadBgpIdentifier),
+                vec![],
+            );
+            self.send_notification(notif).await?;
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "duplicate router ID",
+            ));
+        }
+        Ok(())
+    }
+
     /// Handle entering OpenConfirm state - negotiate timers, send KEEPALIVE, notify server
     pub(super) async fn enter_open_confirm(
         &mut self,
-        peer_asn: u32,
-        peer_hold_time: u16,
-        local_asn: u32,
-        local_hold_time: u16,
-        peer_capabilities: PeerCapabilities,
+        params: &BgpOpenParams,
     ) -> Result<(), io::Error> {
+        let peer_asn = params.peer_asn;
+        let peer_capabilities = &params.peer_capabilities;
+
+        self.validate_peer_bgp_id(params).await?;
+
         // Validate peer ASN if configured
         if let Some(expected_asn) = self.config.asn {
             if peer_asn != expected_asn {
@@ -275,7 +311,7 @@ impl Peer {
 
         // Set peer ASN and determine session type
         self.asn = Some(peer_asn);
-        self.session_type = Some(if peer_asn == local_asn {
+        self.session_type = Some(if peer_asn == params.local_asn {
             SessionType::Ibgp
         } else {
             SessionType::Ebgp
@@ -313,16 +349,16 @@ impl Peer {
         // Negotiate ADD-PATH capability (RFC 7911)
         // Send is negotiated when local advertised send AND peer advertised receive
         // Receive is negotiated when local advertised receive AND peer advertised send
-        let negotiated_add_path = self.negotiate_add_path(&peer_capabilities);
+        let negotiated_add_path = self.negotiate_add_path(peer_capabilities);
 
         self.capabilities = PeerCapabilities {
             multiprotocol: negotiated_afi_safis,
             route_refresh: peer_capabilities.route_refresh,
             enhanced_route_refresh: peer_capabilities.enhanced_route_refresh,
             four_octet_asn: negotiated_four_octet_asn,
-            graceful_restart: peer_capabilities.graceful_restart,
+            graceful_restart: peer_capabilities.graceful_restart.clone(),
             add_path: negotiated_add_path,
-            llgr: peer_capabilities.llgr,
+            llgr: peer_capabilities.llgr.clone(),
         };
 
         // RFC 4724: Update FSM with GR status
@@ -362,7 +398,7 @@ impl Peer {
               "peer capabilities");
 
         // Negotiate hold time: use minimum (RFC 4271).
-        let hold_time = local_hold_time.min(peer_hold_time);
+        let hold_time = params.local_hold_time.min(params.peer_hold_time);
         self.fsm.timers.set_negotiated_hold_time(hold_time);
 
         // Send KEEPALIVE message
@@ -384,7 +420,6 @@ impl Peer {
         let _ = self.server_tx.send(ServerOp::PeerHandshakeComplete {
             peer_ip: self.addr,
             asn: peer_asn,
-            conn_type: self.conn_type,
         });
 
         Ok(())
@@ -491,7 +526,7 @@ impl Peer {
     }
 
     /// Track statistics for received BGP messages
-    fn track_received_message(&mut self, message: &BgpMessage) {
+    pub(super) fn track_received_message(&mut self, message: &BgpMessage) {
         match message {
             BgpMessage::Open(open_msg) => {
                 self.statistics.open_received += 1;
@@ -505,9 +540,25 @@ impl Peer {
                 self.statistics.keepalive_received += 1;
                 debug!(peer_ip = %self.addr, "received KEEPALIVE");
             }
-            BgpMessage::Notification(notif_msg) => {
+            BgpMessage::Notification(notif) => {
                 self.statistics.notification_received += 1;
-                warn!(peer_ip = %self.addr, notification = ?notif_msg, "received NOTIFICATION");
+                warn!(peer_ip = %self.addr, notification = ?notif, "received NOTIFICATION");
+                metric(
+                    metrics::NOTIFICATION_RECEIVED_COUNT,
+                    1,
+                    Unit::Count,
+                    &[("Peer", &self.addr), ("Code", &notif.error().error_code())],
+                    &[&["Peer"], &["Code"], &["Peer", "Code"]],
+                    &[("Subcode", &notif.error().error_subcode())],
+                );
+                // RFC 5492: if peer doesn't understand capabilities, suppress them on retry.
+                if matches!(
+                    notif.error(),
+                    BgpError::OpenMessageError(OpenMessageError::UnsupportedOptionalParameter)
+                ) {
+                    info!(peer_ip = %self.addr, "peer does not support capabilities, suppressing on retry");
+                    self.capabilities_suppressed = true;
+                }
             }
             BgpMessage::RouteRefresh(msg) => {
                 self.statistics.route_refresh_received += 1;
@@ -533,13 +584,6 @@ impl Peer {
                 self.bgp_id = Some(std::net::Ipv4Addr::from(
                     open_msg.bgp_identifier.to_be_bytes(),
                 ));
-
-                // RFC 4271 6.8: Notify server for collision detection
-                let _ = self.server_tx.send(ServerOp::OpenReceived {
-                    peer_ip: self.addr,
-                    bgp_id: open_msg.bgp_identifier,
-                    conn_type: self.conn_type,
-                });
 
                 // Extract capabilities from OPEN message
                 let peer_capabilities = extract_capabilities(open_msg);
@@ -866,6 +910,41 @@ mod tests {
                 "local={:?} peer={:?}",
                 local_caps, peer_caps
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_local_wins_collision() {
+        // Local: bgp_id 1.1.1.1, asn 65000 (from create_test_peer_with_state)
+        // (name, remote_bgp_id, remote_asn, local_wins)
+        let cases = vec![
+            ("higher remote id", Ipv4Addr::new(2, 2, 2, 2), 65001, false),
+            ("lower remote id", Ipv4Addr::new(0, 0, 0, 1), 65001, true),
+            // RFC 6286: equal IDs tie-break on AS
+            (
+                "equal id, higher remote asn",
+                Ipv4Addr::new(1, 1, 1, 1),
+                65001,
+                false,
+            ),
+            (
+                "equal id, lower remote asn",
+                Ipv4Addr::new(1, 1, 1, 1),
+                64999,
+                true,
+            ),
+            (
+                "equal id, equal asn",
+                Ipv4Addr::new(1, 1, 1, 1),
+                65000,
+                false,
+            ),
+        ];
+
+        for (name, remote_id, remote_asn, expected) in cases {
+            let peer = create_test_peer_with_state(BgpState::OpenSent).await;
+            let open = OpenMessage::new(remote_asn, 180, u32::from(remote_id));
+            assert_eq!(peer.local_wins_collision(&open), expected, "{}", name);
         }
     }
 

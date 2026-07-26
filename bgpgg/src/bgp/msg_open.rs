@@ -14,7 +14,7 @@
 
 use super::msg::{Message, MessageType};
 use super::msg_notification::{BgpError, OpenMessageError};
-use super::utils::{is_valid_unicast_ipv4, ParserError};
+use super::utils::ParserError;
 
 // Re-export public types
 pub use super::msg_open_types::OptionalParam;
@@ -119,11 +119,9 @@ fn validate_hold_time(hold_time: u16) -> Result<(), ParserError> {
     Ok(())
 }
 
-/// Validate BGP Identifier (RFC 4271 Section 6.2)
-/// Must be a valid unicast IP host address
-/// Cannot be 0.0.0.0, 255.255.255.255, or multicast (224.0.0.0/4)
+/// Validate BGP Identifier (RFC 6286 Section 2.1)
 fn validate_bgp_identifier(bgp_identifier: u32) -> Result<(), ParserError> {
-    if !is_valid_unicast_ipv4(bgp_identifier) {
+    if bgp_identifier == 0 {
         return Err(ParserError::BgpError {
             error: BgpError::OpenMessageError(OpenMessageError::BadBgpIdentifier),
             data: Vec::new(),
@@ -703,14 +701,16 @@ mod tests {
     }
 
     #[test]
-    fn test_from_bytes_bad_bgp_identifier() {
+    fn test_from_bytes_bgp_identifier_validation() {
+        // RFC 6286 2.1: any non-zero value is a legal identifier
         let test_cases = vec![
-            ("zero", [0x00, 0x00, 0x00, 0x00]),      // 0.0.0.0
-            ("broadcast", [0xff, 0xff, 0xff, 0xff]), // 255.255.255.255
-            ("multicast", [0xe0, 0x00, 0x00, 0x01]), // 224.0.0.1
+            ("zero", [0x00, 0x00, 0x00, 0x00], false),     // 0.0.0.0
+            ("broadcast", [0xff, 0xff, 0xff, 0xff], true), // 255.255.255.255
+            ("multicast", [0xe0, 0x00, 0x00, 0x01], true), // 224.0.0.1
+            ("unicast", [0x01, 0x01, 0x01, 0x01], true),   // 1.1.1.1
         ];
 
-        for (name, bgp_id) in test_cases {
+        for (name, bgp_id, valid) in test_cases {
             let mut msg = TEST_OPEN_MESSAGE_BODY.to_vec();
             msg[5] = bgp_id[0];
             msg[6] = bgp_id[1];
@@ -718,7 +718,17 @@ mod tests {
             msg[8] = bgp_id[3];
 
             match OpenMessage::from_bytes(msg) {
+                Ok(open) => {
+                    assert!(valid, "Expected BadBgpIdentifier error for case: {}", name);
+                    assert_eq!(
+                        open.bgp_identifier,
+                        u32::from_be_bytes(bgp_id),
+                        "Failed for case: {}",
+                        name
+                    );
+                }
                 Err(ParserError::BgpError { error, data }) => {
+                    assert!(!valid, "Expected valid identifier for case: {}", name);
                     assert_eq!(
                         error,
                         BgpError::OpenMessageError(OpenMessageError::BadBgpIdentifier),
@@ -727,7 +737,7 @@ mod tests {
                     );
                     assert_eq!(data, Vec::<u8>::new(), "Failed for case: {}", name);
                 }
-                _ => panic!("Expected BadBgpIdentifier error for case: {}", name),
+                Err(other) => panic!("Unexpected error for case {}: {:?}", name, other),
             }
         }
     }

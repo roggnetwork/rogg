@@ -366,14 +366,12 @@ impl Fsm {
             (BgpState::Connect, FsmEvent::ConnectRetryTimerExpires) => BgpState::Connect,
             (BgpState::Connect, FsmEvent::DelayOpenTimerExpires) => BgpState::OpenSent,
             (BgpState::Connect, FsmEvent::TcpConnectionConfirmed) => BgpState::OpenSent,
-            // RFC 4271 8.2.2 Event 18: If DelayOpenTimer running -> Active, else -> Idle
-            (BgpState::Connect, FsmEvent::TcpConnectionFails) => {
-                if self.timers.delay_open_timer_running() {
-                    BgpState::Active
-                } else {
-                    BgpState::Idle
-                }
-            }
+            // Event 18: dial failed -> Active, keep listening for inbound and
+            // retry on ConnectRetry. Deliberate deviation from RFC 4271, which
+            // goes to Idle when DelayOpen is not running: Idle would refuse
+            // the peer's own dial for the whole idle hold, gating convergence
+            // on timers.
+            (BgpState::Connect, FsmEvent::TcpConnectionFails) => BgpState::Active,
             // RFC 4271 8.2.2 Event 19: BGPOpen without DelayOpenTimer -> Idle (any other event)
             (BgpState::Connect, FsmEvent::BgpOpenReceived(_)) => BgpState::Idle,
             // RFC 4271 8.2.2 Event 20: BGPOpen with DelayOpenTimer running -> OpenConfirm
@@ -583,24 +581,15 @@ mod tests {
 
     #[test]
     fn test_connection_failure_handling() {
-        {
-            // RFC 4271 Event 18: TcpConnectionFails without DelayOpenTimer -> Idle
-            let mut fsm = Fsm::with_state(BgpState::Connect, false);
-            fsm.handle_event(&FsmEvent::TcpConnectionFails);
-            assert_eq!(fsm.state(), BgpState::Idle);
-        }
+        // Event 18: dial failed -> Active (listen for inbound, retry on
+        // ConnectRetry)
+        let mut fsm = Fsm::with_state(BgpState::Connect, false);
+        fsm.handle_event(&FsmEvent::TcpConnectionFails);
+        assert_eq!(fsm.state(), BgpState::Active);
 
-        {
-            // RFC 4271 Event 18: TcpConnectionFails with DelayOpenTimer running -> Active
-            let mut fsm = Fsm::with_state(BgpState::Connect, false);
-            fsm.timers.start_delay_open_timer();
-            fsm.handle_event(&FsmEvent::TcpConnectionFails);
-            assert_eq!(fsm.state(), BgpState::Active);
-
-            // Active -> Connect (retry)
-            fsm.handle_event(&FsmEvent::ConnectRetryTimerExpires);
-            assert_eq!(fsm.state(), BgpState::Connect);
-        }
+        // Active -> Connect (retry)
+        fsm.handle_event(&FsmEvent::ConnectRetryTimerExpires);
+        assert_eq!(fsm.state(), BgpState::Connect);
     }
 
     #[test]
