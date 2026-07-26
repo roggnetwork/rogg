@@ -530,7 +530,13 @@ async fn test_collision_candidate_junk_dropped() {
                 candidate.send_raw(&[0xAB; 19]).await;
                 assert_conn_closed(candidate.stream.as_mut().unwrap()).await;
             }
-            Junk::Close => drop(candidate),
+            Junk::Close => {
+                // No socket left to observe the close on (the other cases use
+                // assert_conn_closed as their barrier), so wait until the server
+                // has reaped the candidate before driving the dialed handshake.
+                drop(candidate);
+                poll_collision_event(&server, metrics::COLLISION_CANDIDATE_DROPPED_COUNT).await;
+            }
         }
 
         peer.send_open(65002, Ipv4Addr::new(3, 3, 3, 3), 300).await;

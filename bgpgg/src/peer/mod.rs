@@ -418,8 +418,8 @@ pub struct Peer {
     /// TCP connection - None when disconnected (Idle/Connect/Active states)
     conn: Option<TcpConnection>,
     /// Second connection during a collision (RFC 4271 6.8): the accepted
-    /// connection held while `conn` is one we dialed. Resolved in place when
-    /// the peer's OPEN arrives on either connection.
+    /// connection held while `conn` is one we dialed. The peer's first OPEN on
+    /// either connection resolves it. None outside a collision.
     conn_pending: Option<TcpConnection>,
     /// True if `conn` was initiated by us (dialed), false if accepted.
     conn_dialed: bool,

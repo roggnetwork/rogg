@@ -34,6 +34,8 @@ pub const COLLISION_DETECTED_COUNT: &str = "CollisionDetectedCount";
 pub const COLLISION_DIALED_WINS_COUNT: &str = "CollisionDialedWinsCount";
 /// Resolution: the accepted connection won; dialed connection closed.
 pub const COLLISION_ACCEPTED_WINS_COUNT: &str = "CollisionAcceptedWinsCount";
+/// A held candidate was dropped without resolving (closed or sent junk before OPEN).
+pub const COLLISION_CANDIDATE_DROPPED_COUNT: &str = "CollisionCandidateDroppedCount";
 pub const HOLD_TIMER_EXPIRED_COUNT: &str = "HoldTimerExpiredCount";
 pub const NOTIFICATION_RECEIVED_COUNT: &str = "NotificationReceivedCount";
 pub const NOTIFICATION_SENT_COUNT: &str = "NotificationSentCount";

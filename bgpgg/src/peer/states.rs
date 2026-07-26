@@ -66,7 +66,9 @@ impl Peer {
                                             if self.local_wins_collision(open) {
                                                 self.resolve_collision_dialed_wins();
                                             } else {
-                                                // The OPEN arrived on the losing connection; discard it.
+                                                // The OPEN arrived on the losing dialed
+                                                // connection; discard it and adopt the
+                                                // candidate (RFC 4271 6.8).
                                                 self.adopt_pending_after_collision_loss(None).await;
                                                 continue;
                                             }
@@ -333,8 +335,8 @@ impl Peer {
         self.conn_pending = None;
     }
 
-    /// Make the pending accepted connection the primary. Returns false if
-    /// none is held.
+    /// Make the pending accepted connection the primary. Returns false if none
+    /// is held.
     fn replace_conn_with_pending(&mut self) -> bool {
         let Some(pending) = self.conn_pending.take() else {
             return false;
@@ -365,10 +367,10 @@ impl Peer {
         true
     }
 
-    /// The accepted connection won the collision (RFC 4271 6.8): close the
-    /// dialed connection and continue on the accepted one. `open` is the
-    /// peer's OPEN when it arrived on the accepted connection (processed on
-    /// it); None when it arrived on the losing dialed connection (discarded).
+    /// The candidate connection won the collision (RFC 4271 6.8): close the
+    /// dialed connection and continue on the candidate. `open` is the peer's
+    /// OPEN if it arrived on the candidate; None if it arrived on the losing
+    /// dialed connection (discarded).
     pub(super) async fn adopt_pending_after_collision_loss(&mut self, open: Option<OpenMessage>) {
         info!(peer_ip = %self.addr, "collision: accepted connection wins, closing dialed connection");
         self.collision_event(metrics::COLLISION_ACCEPTED_WINS_COUNT);
@@ -412,32 +414,27 @@ impl Peer {
         }
     }
 
-    /// Handle a message on the pending (accepted) connection. The peer's
-    /// OPEN resolves the collision (RFC 4271 6.8); anything else drops the
-    /// candidate.
+    /// Handle a message on the candidate connection. Its OPEN resolves the
+    /// collision (RFC 4271 6.8). Anything else -- a non-OPEN message, malformed
+    /// bytes, or a close -- means it never became a valid competitor, so drop
+    /// it and continue on the dialed connection.
     pub(super) async fn handle_conn_pending_msg(
         &mut self,
         result: Option<Result<Vec<u8>, ParserError>>,
     ) {
-        match result {
-            Some(Ok(bytes)) => match Self::parse_bgp_message(&bytes, PRE_OPEN_FORMAT) {
-                Ok(BgpMessage::Open(open)) => {
-                    if self.local_wins_collision(&open) {
-                        self.resolve_collision_dialed_wins();
-                    } else {
-                        self.adopt_pending_after_collision_loss(Some(open)).await;
-                    }
+        if let Some(Ok(bytes)) = &result {
+            if let Ok(BgpMessage::Open(open)) = Self::parse_bgp_message(bytes, PRE_OPEN_FORMAT) {
+                if self.local_wins_collision(&open) {
+                    self.resolve_collision_dialed_wins();
+                } else {
+                    self.adopt_pending_after_collision_loss(Some(open)).await;
                 }
-                Ok(_) | Err(_) => {
-                    debug!(peer_ip = %self.addr, "dropping accepted connection: unexpected message before OPEN");
-                    self.conn_pending = None;
-                }
-            },
-            Some(Err(_)) | None => {
-                debug!(peer_ip = %self.addr, "accepted connection closed");
-                self.conn_pending = None;
+                return;
             }
         }
+        debug!(peer_ip = %self.addr, "dropping accepted connection: no valid OPEN");
+        self.collision_event(metrics::COLLISION_CANDIDATE_DROPPED_COUNT);
+        self.conn_pending = None;
     }
 
     /// Reject an accepted connection: send Cease/ConnectionRejected and close.
