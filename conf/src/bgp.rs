@@ -1283,6 +1283,10 @@ impl BgpConfig {
         if !has_router_id {
             return Err("missing required field 'router-id'".into());
         }
+        // RFC 6286 2.2: a zero BGP Identifier is rejected by every peer
+        if config.router_id.is_unspecified() {
+            return Err("router-id must not be 0.0.0.0".into());
+        }
 
         for peer_block in &bgp.peers {
             config.insert_peer(peer_config_from_block(peer_block))?;
@@ -3527,6 +3531,11 @@ service bgp {
         let result = BgpConfig::from_conf_str(input);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("router-id"));
+
+        let input = "service bgp {\n  asn 65001\n  router-id 0.0.0.0\n}";
+        let result = BgpConfig::from_conf_str(input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("0.0.0.0"));
     }
 
     #[test]

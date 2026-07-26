@@ -75,28 +75,40 @@ async fn test_open_unacceptable_hold_time() {
     }
 }
 
+/// RFC 6286: the BGP Identifier is any non-zero 4-octet value, unique per
+/// AS. Reject zero (2.1) and our own identifier from an internal peer (2.2);
+/// accept everything else, including non-unicast values and our own
+/// identifier from an external peer. Server is AS 65001, router-id 1.1.1.1.
 #[tokio::test]
-async fn test_open_bad_bgp_identifier() {
+async fn test_open_bgp_identifier_validation() {
     let test_cases = vec![
-        ("zero", 0x00000000),      // 0.0.0.0
-        ("broadcast", 0xFFFFFFFF), // 255.255.255.255
-        ("multicast", 0xE0000001), // 224.0.0.1
+        // (name, peer_asn, bgp_id, reject)
+        ("zero", 65002, 0x00000000, true),
+        ("internal duplicate of our id", 65001, 0x01010101, true),
+        ("broadcast", 65002, 0xFFFFFFFF, false),
+        ("multicast", 65002, 0xE0000001, false),
+        ("external peer with our id", 65002, 0x01010101, false),
     ];
 
-    for (name, bgp_id) in test_cases {
-        let (_server, mut peer) = setup_server_and_fake_peer().await;
+    for (name, peer_asn, bgp_id, reject) in test_cases {
+        let server = setup_server_with_passive_peer().await;
+        let mut peer = FakePeer::connect(None, &server).await;
+        peer.read_open().await;
 
-        let msg = OpenMessage::new(65002, 300, bgp_id).serialize();
+        peer.send_raw(&OpenMessage::new(peer_asn, 300, bgp_id).serialize())
+            .await;
 
-        peer.send_raw(&msg).await;
-
-        let notif = peer.read_notification().await;
-        assert_eq!(
-            notif.error(),
-            &BgpError::OpenMessageError(OpenMessageError::BadBgpIdentifier),
-            "Failed for case: {}",
-            name
-        );
-        assert_eq!(notif.data(), &[] as &[u8], "Failed for case: {}", name);
+        if reject {
+            let notif = peer.read_notification().await;
+            assert_eq!(
+                notif.error(),
+                &BgpError::OpenMessageError(OpenMessageError::BadBgpIdentifier),
+                "Failed for case: {}",
+                name
+            );
+        } else {
+            // Server accepts the OPEN and enters OpenConfirm
+            peer.read_keepalive().await;
+        }
     }
 }

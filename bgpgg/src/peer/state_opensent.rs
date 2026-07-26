@@ -134,14 +134,7 @@ impl Peer {
             | (BgpState::OpenConfirm, &FsmEvent::BgpOpenWithDelayOpenTimer(ref params)) => {
                 self.fsm.timers.stop_delay_open_timer();
                 self.fsm.timers.stop_connect_retry();
-                self.enter_open_confirm(
-                    params.peer_asn,
-                    params.peer_hold_time,
-                    params.local_asn,
-                    params.local_hold_time,
-                    params.peer_capabilities.clone(),
-                )
-                .await?;
+                self.enter_open_confirm(params).await?;
             }
 
             _ => {}

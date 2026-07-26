@@ -254,15 +254,37 @@ impl Peer {
         Ok(())
     }
 
+    /// RFC 6286 2.2: reject an OPEN from an internal peer carrying our own
+    /// BGP Identifier (duplicate router ID).
+    async fn validate_peer_bgp_id(&mut self, params: &BgpOpenParams) -> Result<(), io::Error> {
+        if params.peer_asn == self.local_config.asn
+            && params.peer_bgp_id == u32::from(self.local_config.bgp_id)
+        {
+            warn!(peer_ip = %self.addr, bgp_id = %self.local_config.bgp_id,
+                  "rejecting session: internal peer presented our own BGP Identifier (duplicate router ID)");
+            let notif = NotificationMessage::new(
+                BgpError::OpenMessageError(OpenMessageError::BadBgpIdentifier),
+                vec![],
+            );
+            self.send_notification(notif).await?;
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "duplicate router ID",
+            ));
+        }
+        Ok(())
+    }
+
     /// Handle entering OpenConfirm state - negotiate timers, send KEEPALIVE, notify server
     pub(super) async fn enter_open_confirm(
         &mut self,
-        peer_asn: u32,
-        peer_hold_time: u16,
-        local_asn: u32,
-        local_hold_time: u16,
-        peer_capabilities: PeerCapabilities,
+        params: &BgpOpenParams,
     ) -> Result<(), io::Error> {
+        let peer_asn = params.peer_asn;
+        let peer_capabilities = &params.peer_capabilities;
+
+        self.validate_peer_bgp_id(params).await?;
+
         // Validate peer ASN if configured
         if let Some(expected_asn) = self.config.asn {
             if peer_asn != expected_asn {
@@ -289,7 +311,7 @@ impl Peer {
 
         // Set peer ASN and determine session type
         self.asn = Some(peer_asn);
-        self.session_type = Some(if peer_asn == local_asn {
+        self.session_type = Some(if peer_asn == params.local_asn {
             SessionType::Ibgp
         } else {
             SessionType::Ebgp
@@ -327,16 +349,16 @@ impl Peer {
         // Negotiate ADD-PATH capability (RFC 7911)
         // Send is negotiated when local advertised send AND peer advertised receive
         // Receive is negotiated when local advertised receive AND peer advertised send
-        let negotiated_add_path = self.negotiate_add_path(&peer_capabilities);
+        let negotiated_add_path = self.negotiate_add_path(peer_capabilities);
 
         self.capabilities = PeerCapabilities {
             multiprotocol: negotiated_afi_safis,
             route_refresh: peer_capabilities.route_refresh,
             enhanced_route_refresh: peer_capabilities.enhanced_route_refresh,
             four_octet_asn: negotiated_four_octet_asn,
-            graceful_restart: peer_capabilities.graceful_restart,
+            graceful_restart: peer_capabilities.graceful_restart.clone(),
             add_path: negotiated_add_path,
-            llgr: peer_capabilities.llgr,
+            llgr: peer_capabilities.llgr.clone(),
         };
 
         // RFC 4724: Update FSM with GR status
@@ -376,7 +398,7 @@ impl Peer {
               "peer capabilities");
 
         // Negotiate hold time: use minimum (RFC 4271).
-        let hold_time = local_hold_time.min(peer_hold_time);
+        let hold_time = params.local_hold_time.min(params.peer_hold_time);
         self.fsm.timers.set_negotiated_hold_time(hold_time);
 
         // Send KEEPALIVE message
