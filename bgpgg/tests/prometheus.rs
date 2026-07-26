@@ -119,12 +119,16 @@ bgpgg_adj_rib_in_route_count{{peer=\"127.0.0.2\"}} 0
 bgpgg_adj_rib_in_afi_safi_route_count{{peer=\"127.0.0.2\",afi_safi=\"IPv4/Unicast\"}} 0
 bgpgg_adj_rib_in_afi_safi_route_count{{peer=\"127.0.0.2\",afi_safi=\"IPv6/Unicast\"}} 0
 bgpgg_adj_rib_in_afi_safi_route_count{{peer=\"127.0.0.2\",afi_safi=\"LinkState/LinkState\"}} 0
+# TYPE bgpgg_adj_rib_in_route_total_count gauge
+bgpgg_adj_rib_in_route_total_count 0
 # TYPE bgpgg_adj_rib_out_route_count gauge
 bgpgg_adj_rib_out_route_count{{peer=\"127.0.0.2\"}} 0
 # TYPE bgpgg_adj_rib_out_afi_safi_route_count gauge
 bgpgg_adj_rib_out_afi_safi_route_count{{peer=\"127.0.0.2\",afi_safi=\"IPv4/Unicast\"}} 0
 bgpgg_adj_rib_out_afi_safi_route_count{{peer=\"127.0.0.2\",afi_safi=\"IPv6/Unicast\"}} 0
 bgpgg_adj_rib_out_afi_safi_route_count{{peer=\"127.0.0.2\",afi_safi=\"LinkState/LinkState\"}} 0
+# TYPE bgpgg_adj_rib_out_route_total_count gauge
+bgpgg_adj_rib_out_route_total_count 0
 {process_memory}\
 # TYPE bgpgg_messages_received_total counter
 bgpgg_messages_received_total{{peer=\"127.0.0.2\",message_type=\"open\"}} 1

@@ -214,6 +214,16 @@ fn build_families(
         prometheus_name(metrics::ADJ_RIB_IN_AFI_SAFI_ROUTE_COUNT),
         per_peer_family(|peer| &peer.adj_rib_in_families),
     ));
+    let router_total = |select: fn(&PeerMetricsSnapshot) -> usize| {
+        vec![Sample {
+            labels: vec![],
+            value: snapshot.peers.iter().map(select).sum::<usize>() as f64,
+        }]
+    };
+    families.push(gauge(
+        prometheus_name(metrics::ADJ_RIB_IN_ROUTE_TOTAL_COUNT),
+        router_total(|peer| peer.adj_rib_in_total),
+    ));
     families.push(gauge(
         prometheus_name(metrics::ADJ_RIB_OUT_ROUTE_COUNT),
         per_peer_total(|peer| peer.adj_rib_out_total),
@@ -221,6 +231,10 @@ fn build_families(
     families.push(gauge(
         prometheus_name(metrics::ADJ_RIB_OUT_AFI_SAFI_ROUTE_COUNT),
         per_peer_family(|peer| &peer.adj_rib_out_families),
+    ));
+    families.push(gauge(
+        prometheus_name(metrics::ADJ_RIB_OUT_ROUTE_TOTAL_COUNT),
+        router_total(|peer| peer.adj_rib_out_total),
     ));
 
     families.push(gauge(
@@ -332,24 +346,28 @@ bgpgg_loc_rib_route_count{afi_safi=\"IPv4/Unicast\"} 5
 bgpgg_adj_rib_in_route_count{peer=\"10.0.0.1\"} 5
 # TYPE bgpgg_adj_rib_in_afi_safi_route_count gauge
 bgpgg_adj_rib_in_afi_safi_route_count{peer=\"10.0.0.1\",afi_safi=\"IPv4/Unicast\"} 5
+# TYPE bgpgg_adj_rib_in_route_total_count gauge
+bgpgg_adj_rib_in_route_total_count 5
 # TYPE bgpgg_adj_rib_out_route_count gauge
 bgpgg_adj_rib_out_route_count{peer=\"10.0.0.1\"} 2
 # TYPE bgpgg_adj_rib_out_afi_safi_route_count gauge
 bgpgg_adj_rib_out_afi_safi_route_count{peer=\"10.0.0.1\",afi_safi=\"IPv4/Unicast\"} 2
+# TYPE bgpgg_adj_rib_out_route_total_count gauge
+bgpgg_adj_rib_out_route_total_count 2
 # TYPE bgpgg_process_memory_bytes gauge
 bgpgg_process_memory_bytes 4096
 # TYPE bgpgg_messages_received_total counter
-bgpgg_messages_received_total{peer=\"10.0.0.1\",type=\"open\"} 1
-bgpgg_messages_received_total{peer=\"10.0.0.1\",type=\"keepalive\"} 3
-bgpgg_messages_received_total{peer=\"10.0.0.1\",type=\"update\"} 5
-bgpgg_messages_received_total{peer=\"10.0.0.1\",type=\"notification\"} 0
-bgpgg_messages_received_total{peer=\"10.0.0.1\",type=\"route_refresh\"} 0
+bgpgg_messages_received_total{peer=\"10.0.0.1\",message_type=\"open\"} 1
+bgpgg_messages_received_total{peer=\"10.0.0.1\",message_type=\"keepalive\"} 3
+bgpgg_messages_received_total{peer=\"10.0.0.1\",message_type=\"update\"} 5
+bgpgg_messages_received_total{peer=\"10.0.0.1\",message_type=\"notification\"} 0
+bgpgg_messages_received_total{peer=\"10.0.0.1\",message_type=\"route_refresh\"} 0
 # TYPE bgpgg_messages_sent_total counter
-bgpgg_messages_sent_total{peer=\"10.0.0.1\",type=\"open\"} 1
-bgpgg_messages_sent_total{peer=\"10.0.0.1\",type=\"keepalive\"} 4
-bgpgg_messages_sent_total{peer=\"10.0.0.1\",type=\"update\"} 0
-bgpgg_messages_sent_total{peer=\"10.0.0.1\",type=\"notification\"} 0
-bgpgg_messages_sent_total{peer=\"10.0.0.1\",type=\"route_refresh\"} 0
+bgpgg_messages_sent_total{peer=\"10.0.0.1\",message_type=\"open\"} 1
+bgpgg_messages_sent_total{peer=\"10.0.0.1\",message_type=\"keepalive\"} 4
+bgpgg_messages_sent_total{peer=\"10.0.0.1\",message_type=\"update\"} 0
+bgpgg_messages_sent_total{peer=\"10.0.0.1\",message_type=\"notification\"} 0
+bgpgg_messages_sent_total{peer=\"10.0.0.1\",message_type=\"route_refresh\"} 0
 "
         );
     }
@@ -365,7 +383,14 @@ bgpgg_messages_sent_total{peer=\"10.0.0.1\",type=\"route_refresh\"} 0
         let rendered = render(&build_families(&snapshot, &[]));
         assert_eq!(
             rendered,
-            "# TYPE bgpgg_peer_count gauge\nbgpgg_peer_count 0\n"
+            "\
+# TYPE bgpgg_peer_count gauge
+bgpgg_peer_count 0
+# TYPE bgpgg_adj_rib_in_route_total_count gauge
+bgpgg_adj_rib_in_route_total_count 0
+# TYPE bgpgg_adj_rib_out_route_total_count gauge
+bgpgg_adj_rib_out_route_total_count 0
+"
         );
     }
 }

@@ -44,8 +44,14 @@ pub const SESSION_UPTIME_SECONDS: &str = "SessionUptimeSeconds";
 pub const LOC_RIB_ROUTE_COUNT: &str = "LocRibRouteCount";
 pub const ADJ_RIB_IN_ROUTE_COUNT: &str = "AdjRibInRouteCount";
 pub const ADJ_RIB_IN_AFI_SAFI_ROUTE_COUNT: &str = "AdjRibInAfiSafiRouteCount";
+/// Routes received across all peers (sum of per-peer adj-rib-in; the same
+/// prefix from N peers counts N times). Router-wide, no Peer dimension.
+pub const ADJ_RIB_IN_ROUTE_TOTAL_COUNT: &str = "AdjRibInRouteTotalCount";
 pub const ADJ_RIB_OUT_ROUTE_COUNT: &str = "AdjRibOutRouteCount";
 pub const ADJ_RIB_OUT_AFI_SAFI_ROUTE_COUNT: &str = "AdjRibOutAfiSafiRouteCount";
+/// Routes advertised across all peers (sum of per-peer adj-rib-out; a route
+/// sent to N peers counts N times). Router-wide, no Peer dimension.
+pub const ADJ_RIB_OUT_ROUTE_TOTAL_COUNT: &str = "AdjRibOutRouteTotalCount";
 pub const PROCESS_MEMORY_BYTES: &str = "ProcessMemoryBytes";
 
 // Cumulative per-peer message counters

@@ -155,6 +155,34 @@ impl BgpServer {
             }
         }
 
+        // Router-wide totals (sum across peers), RouterId-only series.
+        let adj_rib_in_total: usize = snapshot
+            .peers
+            .iter()
+            .map(|peer| peer.adj_rib_in_total)
+            .sum();
+        metric(
+            metrics::ADJ_RIB_IN_ROUTE_TOTAL_COUNT,
+            adj_rib_in_total,
+            Unit::Count,
+            &[],
+            &[],
+            &[],
+        );
+        let adj_rib_out_total: usize = snapshot
+            .peers
+            .iter()
+            .map(|peer| peer.adj_rib_out_total)
+            .sum();
+        metric(
+            metrics::ADJ_RIB_OUT_ROUTE_TOTAL_COUNT,
+            adj_rib_out_total,
+            Unit::Count,
+            &[],
+            &[],
+            &[],
+        );
+
         for (afi_safi, count) in &snapshot.loc_rib_families {
             metric(
                 metrics::LOC_RIB_ROUTE_COUNT,
@@ -327,6 +355,15 @@ mod tests {
             &[("Peer", "10.99.99.1"), ("AfiSafi", "IPv4/Unicast")],
         );
         assert_eq!(adj_out.len(), 1);
+
+        // Router-wide totals: one emission each, no Peer dimension.
+        let adj_in_router = capture.find(metrics::ADJ_RIB_IN_ROUTE_TOTAL_COUNT, &[]);
+        assert_eq!(adj_in_router.len(), 1);
+        assert!(adj_in_router[0].dimensions.is_empty());
+
+        let adj_out_router = capture.find(metrics::ADJ_RIB_OUT_ROUTE_TOTAL_COUNT, &[]);
+        assert_eq!(adj_out_router.len(), 1);
+        assert!(adj_out_router[0].dimensions.is_empty());
 
         assert!(!capture
             .find(metrics::LOC_RIB_ROUTE_COUNT, &[("AfiSafi", "IPv4/Unicast")])
