@@ -72,6 +72,10 @@ pub enum Command {
     SetBmpServer(BmpServerKey),        // args: [addr, value]
     SetRpkiCache(RpkiCacheKey),        // args: [addr, value]
     SetBgpLs(BgpLsKey),                // args: [value]
+    SetTelemetryJson,                  // args: []
+    SetTelemetryCloudwatchEmf,         // args: [namespace]
+    SetTelemetryPrometheus,            // args: []
+    SetTelemetryPrometheusListen,      // args: [addr]
 
     UnsetTop(TopKey),                             // args: []
     UnsetTopOriginate,                            // args: [prefix]
@@ -88,6 +92,11 @@ pub enum Command {
     UnsetRpkiCacheSetting(RpkiCacheKey),          // args: [addr]
     UnsetBgpLs,                                   // args: []
     UnsetBgpLsSetting(BgpLsKey),                  // args: []
+    UnsetTelemetry,                               // args: []
+    UnsetTelemetryJson,                           // args: []
+    UnsetTelemetryCloudwatchEmf,                  // args: []
+    UnsetTelemetryPrometheus,                     // args: []
+    UnsetTelemetryPrometheusListen,               // args: []
 }
 
 pub struct HelpEntry {
@@ -455,6 +464,41 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_config_bgp_telemetry() {
+        let (cmd, args) = parse_cfg_bgp("telemetry json");
+        assert_eq!(cmd, Command::SetTelemetryJson);
+        assert!(args.is_empty());
+
+        let (cmd, args) = parse_cfg_bgp("telemetry cloudwatch-emf namespace Rogg/Bgpgg");
+        assert_eq!(cmd, Command::SetTelemetryCloudwatchEmf);
+        assert_eq!(args, vec!["Rogg/Bgpgg".to_string()]);
+
+        let (cmd, args) = parse_cfg_bgp("telemetry prometheus");
+        assert_eq!(cmd, Command::SetTelemetryPrometheus);
+        assert!(args.is_empty());
+
+        let (cmd, args) = parse_cfg_bgp("telemetry prometheus listen 0.0.0.0:9273");
+        assert_eq!(cmd, Command::SetTelemetryPrometheusListen);
+        assert_eq!(args, vec!["0.0.0.0:9273".to_string()]);
+
+        let (cmd, args) = parse_cfg_bgp("unset telemetry");
+        assert_eq!(cmd, Command::UnsetTelemetry);
+        assert!(args.is_empty());
+
+        let (cmd, _) = parse_cfg_bgp("unset telemetry json");
+        assert_eq!(cmd, Command::UnsetTelemetryJson);
+
+        let (cmd, _) = parse_cfg_bgp("unset telemetry cloudwatch-emf");
+        assert_eq!(cmd, Command::UnsetTelemetryCloudwatchEmf);
+
+        let (cmd, _) = parse_cfg_bgp("unset telemetry prometheus");
+        assert_eq!(cmd, Command::UnsetTelemetryPrometheus);
+
+        let (cmd, _) = parse_cfg_bgp("unset telemetry prometheus listen");
+        assert_eq!(cmd, Command::UnsetTelemetryPrometheusListen);
+    }
+
+    #[test]
     fn test_parse_config_bgp_unset() {
         let (cmd, args) = parse_cfg_bgp("unset asn");
         assert_eq!(cmd, Command::UnsetTop(TopKey::Asn));
@@ -512,6 +556,7 @@ mod tests {
             "peer 10.0.0.1 port notnum",
             "rpki-cache 127.0.0.1:323 transport ftp",
             "rpki-cache 127.0.0.1:323 preference 999", // u8 overflow
+            "telemetry prometheus listen notanaddr",
         ] {
             let tokens: Vec<&str> = bad.split_whitespace().collect();
             assert!(

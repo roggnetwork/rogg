@@ -19,14 +19,41 @@
 
 use super::{parse_prefix_and_nexthop, BgpServer};
 use crate::log::error;
-use conf::bgp::BgpConfig;
+use crate::metrics;
+use conf::bgp::{BgpConfig, TelemetrySink};
 use conf::fs::persist_service_config;
 use conf::language::Service;
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Instant;
+use telemetry::{metric, EmfSink, JsonSink, Sink, Unit};
 
 /// Validate, apply, persist. On apply failure, returns `Err` without
 /// reverting — operator uses `RollbackConfig` to recover.
 pub(crate) async fn commit_config(
+    server: &mut BgpServer,
+    new_config: BgpConfig,
+    bind_addr: SocketAddr,
+) -> Result<(), String> {
+    let start = Instant::now();
+    let result = apply_config(server, new_config, bind_addr).await;
+    let name = if result.is_ok() {
+        metrics::CONFIG_RELOAD_SUCCESS_COUNT
+    } else {
+        metrics::CONFIG_RELOAD_FAILURE_COUNT
+    };
+    metric(
+        name,
+        1,
+        Unit::Count,
+        &[],
+        &[],
+        &[("DurationMs", &start.elapsed().as_millis())],
+    );
+    result
+}
+
+async fn apply_config(
     server: &mut BgpServer,
     new_config: BgpConfig,
     bind_addr: SocketAddr,
@@ -41,6 +68,18 @@ pub(crate) async fn commit_config(
 
     let old_config = server.config.clone();
     reconfigure_all(server, &old_config, &new_config, bind_addr).await?;
+
+    let old_sink = old_config
+        .telemetry
+        .as_ref()
+        .and_then(|telemetry| telemetry.sink.as_ref());
+    let new_sink = new_config
+        .telemetry
+        .as_ref()
+        .and_then(|telemetry| telemetry.sink.as_ref());
+    if old_sink != new_sink {
+        server.telemetry.set_sink(build_telemetry_sink(&new_config));
+    }
 
     let service = Service::Bgp(new_config.to_bgp_service_body());
     if let Err(e) = persist_service_config(&server.config_path, service) {
@@ -74,7 +113,24 @@ async fn reconfigure_all(
     server.reconfigure_originate_routes(old, new).await;
     server.reconfigure_bmp_servers(old, new).await?;
     server.reconfigure_rpki_caches(old, new).await?;
+    server.reconfigure_prometheus(new)?;
     Ok(())
+}
+
+/// Map telemetry config to a metric sink. Shared by daemon startup and
+/// config commit (hot reload).
+pub fn build_telemetry_sink(config: &BgpConfig) -> Option<Arc<dyn Sink>> {
+    match config
+        .telemetry
+        .as_ref()
+        .and_then(|telemetry| telemetry.sink.as_ref())
+    {
+        Some(TelemetrySink::Json) => Some(Arc::new(JsonSink::new())),
+        Some(TelemetrySink::CloudwatchEmf { namespace }) => {
+            Some(Arc::new(EmfSink::new(namespace.clone())))
+        }
+        None => None,
+    }
 }
 
 /// Reject changes to fields that require a daemon restart: identity (asn,
@@ -93,4 +149,36 @@ fn reject_unsupported_changes(old: &BgpConfig, new: &BgpConfig) -> Result<(), St
         return Err("changing 'grpc-listen-addr' requires daemon restart".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_telemetry_sink, BgpConfig, TelemetrySink};
+    use conf::bgp::TelemetryConfig;
+
+    #[test]
+    fn test_build_telemetry_sink() {
+        let mut config = BgpConfig::default();
+        assert!(build_telemetry_sink(&config).is_none());
+
+        config.telemetry = Some(TelemetryConfig {
+            sink: None,
+            prometheus: None,
+        });
+        assert!(build_telemetry_sink(&config).is_none());
+
+        config.telemetry = Some(TelemetryConfig {
+            sink: Some(TelemetrySink::Json),
+            prometheus: None,
+        });
+        assert!(build_telemetry_sink(&config).is_some());
+
+        config.telemetry = Some(TelemetryConfig {
+            sink: Some(TelemetrySink::CloudwatchEmf {
+                namespace: "Rogg/Bgpgg".to_string(),
+            }),
+            prometheus: None,
+        });
+        assert!(build_telemetry_sink(&config).is_some());
+    }
 }

@@ -16,8 +16,10 @@ use super::fsm::{BgpState, FsmEvent};
 use super::{Peer, PeerError, PeerOp};
 use crate::bgp::msg_notification::{BgpError, CeaseSubcode, NotificationMessage};
 use crate::log::{debug, error};
+use crate::metrics;
 use crate::types::PeerDownReason;
 use std::time::Duration;
+use telemetry::{metric, Unit};
 
 const INITIAL_HOLD_TIME: Duration = Duration::from_secs(240);
 
@@ -97,6 +99,14 @@ impl Peer {
         match (new_state, event) {
             // RFC 4271 8.2.2: ConnectRetryTimer expires in Active state
             (BgpState::Connect, FsmEvent::ConnectRetryTimerExpires) => {
+                metric(
+                    metrics::CONNECT_RETRY_COUNT,
+                    1,
+                    Unit::Count,
+                    &[("Peer", &self.addr)],
+                    &[&["Peer"]],
+                    &[],
+                );
                 self.fsm.timers.start_connect_retry();
             }
 

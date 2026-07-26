@@ -344,6 +344,16 @@ async fn test_disable_enable_peer() {
         ..Default::default()
     };
     let (server1, server2) = setup_two_peered_servers(config).await;
+    let peer2 = server2.address.to_string();
+    let peer1 = server1.address.to_string();
+
+    assert_metric(
+        &server1,
+        "SessionEstablishedCount",
+        &[("Peer", &peer2)],
+        &[],
+    )
+    .await;
 
     // Disable peer
     server1
@@ -361,6 +371,37 @@ async fn test_disable_enable_peer() {
                 && peers[0].admin_state == AdminState::Down as i32
         },
         "Peer should be Idle with admin_state Down",
+    )
+    .await;
+
+    // Disable sends Cease/AdministrativeShutdown (code 6, subcode 2):
+    // server1 reports it sent, server2 reports it received.
+    assert_metric(
+        &server1,
+        "NotificationSentCount",
+        &[("Peer", &peer2), ("Code", "6")],
+        &[("Subcode", "2")],
+    )
+    .await;
+    assert_metric(
+        &server1,
+        "SessionDownCount",
+        &[("Peer", &peer2)],
+        &[("Reason", "local-notification")],
+    )
+    .await;
+    assert_metric(
+        &server2,
+        "NotificationReceivedCount",
+        &[("Peer", &peer1), ("Code", "6")],
+        &[("Subcode", "2")],
+    )
+    .await;
+    assert_metric(
+        &server2,
+        "SessionDownCount",
+        &[("Peer", &peer1)],
+        &[("Reason", "remote-notification")],
     )
     .await;
 
@@ -1567,6 +1608,13 @@ async fn test_apply_failure_no_revert() {
     let result = server.commit_config(bad_candidate).await;
     assert!(result.is_err(), "commit with bad BMP address must fail");
 
+    // ASN change parses fine but is rejected at apply time.
+    let mut asn_change = before.clone();
+    asn_change.asn = 65099;
+    let result = server.commit_config(asn_change.to_conf_str()).await;
+    assert!(result.is_err(), "commit with changed asn must fail");
+    assert_metric(&server, "ConfigReloadFailureCount", &[], &[]).await;
+
     // rogg.conf unchanged; no snapshot rotation triggered by the failure.
     let after = server.read_conf();
     assert_eq!(after.bmp_servers.len(), 1);
@@ -1762,6 +1810,7 @@ async fn test_ggsh_set_then_commit_persists() {
         bmp_servers: Vec::new(),
         rpki_caches: Vec::new(),
         bgp_ls: None,
+        telemetry: None,
     };
     let candidate = Root {
         services: vec![Service::Bgp(body)],
@@ -1771,6 +1820,8 @@ async fn test_ggsh_set_then_commit_persists() {
         .commit_config(candidate.to_string())
         .await
         .expect("commit succeeds");
+
+    assert_metric(&server, "ConfigReloadSuccessCount", &[], &[]).await;
 
     // Daemon's persisted view reflects the new peer settings.
     let after = server.read_conf();

@@ -21,6 +21,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 libc = "0.2"
 conf = { path = "../conf" }
+telemetry = { path = "../telemetry" }
 russh = "0.58"
 uuid.workspace = true
 

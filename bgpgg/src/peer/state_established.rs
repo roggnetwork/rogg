@@ -19,9 +19,11 @@ use crate::bgp::msg_notification::{BgpError, CeaseSubcode, NotificationMessage};
 use crate::bgp::msg_route_refresh::{RouteRefreshMessage, RouteRefreshSubtype};
 use crate::bgp::multiprotocol::AfiSafi;
 use crate::log::{debug, error, info, warn};
+use crate::metrics;
 use crate::types::PeerDownReason;
 use std::mem;
 use std::time::{Duration, Instant};
+use telemetry::{metric, Unit};
 use tokio::io::AsyncWriteExt;
 
 /// Flush pending route buffer immediately when it reaches this size,
@@ -282,6 +284,17 @@ impl Peer {
                                           "failed to send hard reset notification");
                                 } else {
                                     self.statistics.notification_sent += 1;
+                                    metric(
+                                        metrics::NOTIFICATION_SENT_COUNT,
+                                        1,
+                                        Unit::Count,
+                                        &[
+                                            ("Peer", &peer_ip),
+                                            ("Code", &notif.error().error_code()),
+                                        ],
+                                        &[&["Peer"], &["Code"], &["Peer", "Code"]],
+                                        &[("Subcode", &notif.error().error_subcode())],
+                                    );
                                 }
                             }
 
@@ -294,7 +307,16 @@ impl Peer {
                         PeerOp::Shutdown(subcode) => {
                             info!(peer_ip = %peer_ip, "shutdown requested");
                             let notif = NotificationMessage::new(BgpError::Cease(subcode), Vec::new());
-                            let _ = self.send_notification(notif).await;
+                            let _ = self.send_notification(notif.clone()).await;
+                            // This path skips disconnect(), so report here.
+                            metric(
+                                metrics::SESSION_DOWN_COUNT,
+                                1,
+                                Unit::Count,
+                                &[("Peer", &peer_ip)],
+                                &[&["Peer"]],
+                                &[("Reason", &PeerDownReason::LocalNotification(notif))],
+                            );
                             return true;
                         }
                         PeerOp::ManualStop => {

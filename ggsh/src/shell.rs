@@ -208,6 +208,14 @@ impl Shell {
                 cmd_configure::apply_set_rpki_cache(self, key, &args[0], &args[1])?
             }
             Command::SetBgpLs(key) => cmd_configure::apply_set_bgp_ls(self, key, &args[0])?,
+            Command::SetTelemetryJson => cmd_configure::apply_set_telemetry_json(self)?,
+            Command::SetTelemetryCloudwatchEmf => {
+                cmd_configure::apply_set_telemetry_cloudwatch_emf(self, &args[0])?
+            }
+            Command::SetTelemetryPrometheus => cmd_configure::apply_set_telemetry_prometheus(self)?,
+            Command::SetTelemetryPrometheusListen => {
+                cmd_configure::apply_set_telemetry_prometheus_listen(self, &args[0])?
+            }
 
             Command::UnsetTop(key) => cmd_configure::apply_unset_top(self, key)?,
             Command::UnsetTopOriginate => cmd_configure::apply_unset_top_originate(self, &args[0])?,
@@ -239,6 +247,17 @@ impl Shell {
             Command::UnsetBgpLs => cmd_configure::apply_unset_bgp_ls(self)?,
             Command::UnsetBgpLsSetting(key) => {
                 cmd_configure::apply_unset_bgp_ls_setting(self, key)?
+            }
+            Command::UnsetTelemetry => cmd_configure::apply_unset_telemetry(self)?,
+            Command::UnsetTelemetryJson => cmd_configure::apply_unset_telemetry_json(self)?,
+            Command::UnsetTelemetryCloudwatchEmf => {
+                cmd_configure::apply_unset_telemetry_cloudwatch_emf(self)?
+            }
+            Command::UnsetTelemetryPrometheus => {
+                cmd_configure::apply_unset_telemetry_prometheus(self)?
+            }
+            Command::UnsetTelemetryPrometheusListen => {
+                cmd_configure::apply_unset_telemetry_prometheus_listen(self)?
             }
         }
         Ok(None)

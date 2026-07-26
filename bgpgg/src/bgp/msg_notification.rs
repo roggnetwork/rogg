@@ -232,7 +232,7 @@ impl BgpError {
         }
     }
 
-    fn error_code(&self) -> u8 {
+    pub fn error_code(&self) -> u8 {
         match self {
             BgpError::MessageHeaderError(_) => 1,
             BgpError::OpenMessageError(_) => 2,
@@ -245,7 +245,7 @@ impl BgpError {
         }
     }
 
-    fn error_subcode(&self) -> u8 {
+    pub fn error_subcode(&self) -> u8 {
         match self {
             BgpError::MessageHeaderError(err) => match err {
                 MessageHeaderError::ConnectionNotSynchronized => 1,

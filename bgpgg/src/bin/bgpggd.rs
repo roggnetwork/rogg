@@ -41,8 +41,7 @@ struct Args {
     runtime_dir: Option<PathBuf>,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     let server = BgpServer::new(args.config.clone()).unwrap_or_else(|err| {
@@ -80,6 +79,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_span_events(FmtSpan::NONE)
         .init();
 
+    // Bind every runtime thread (including this one, which drives block_on and
+    // runs the server loop) to this daemon's telemetry.
+    let runtime = telemetry::bound_runtime(server.telemetry.clone())?;
+    runtime.block_on(run(args, server))
+}
+
+async fn run(args: Args, server: BgpServer) -> Result<(), Box<dyn std::error::Error>> {
     let grpc_listener = TcpListener::bind(&server.config.grpc_listen_addr).await?;
     let grpc_bound = grpc_listener.local_addr()?;
 

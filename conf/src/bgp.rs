@@ -15,11 +15,12 @@
 use crate::language::{self, Service};
 use crate::language_bgp::{
     AddPathSendMode as LangAddPathSendMode, AsPathSetBlock, BgpLsBlock, BgpServiceBody,
-    BmpServerBlock, CommunityOp, CommunityOpKind, CommunitySetBlock, Disposition,
-    ExtCommunitySetBlock, FamilyBlock, FamilyDirective, LargeCommunitySetBlock, MasklengthRange,
-    MatchClause, MatchOptionKind, MatchSetRef, MaxPrefixActionKind, MedSet, NeighborSetBlock,
-    OriginateRoute, PeerBlock, PolicyBlock, PolicyRule, PrefixListBlock, PrefixListEntry,
-    RpkiCacheBlock, RpkiValidationKind, SetClause, Setting, StatementBlock,
+    BmpServerBlock, CloudwatchEmfBlock, CommunityOp, CommunityOpKind, CommunitySetBlock,
+    Disposition, ExtCommunitySetBlock, FamilyBlock, FamilyDirective, LargeCommunitySetBlock,
+    MasklengthRange, MatchClause, MatchOptionKind, MatchSetRef, MaxPrefixActionKind, MedSet,
+    NeighborSetBlock, OriginateRoute, PeerBlock, PolicyBlock, PolicyRule, PrefixListBlock,
+    PrefixListEntry, PrometheusBlock, RpkiCacheBlock, RpkiValidationKind, SetClause, Setting,
+    StatementBlock, TelemetryBlock,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -1039,6 +1040,36 @@ pub struct BgpLsConfig {
     pub instance_id: u64,
 }
 
+/// Telemetry (metric emission) configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct TelemetryConfig {
+    /// Log-emission format for metrics. None = metrics disabled.
+    #[serde(default)]
+    pub sink: Option<TelemetrySink>,
+    /// Prometheus pull endpoint. None = disabled. Coexists with any sink.
+    #[serde(default)]
+    pub prometheus: Option<PrometheusConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TelemetrySink {
+    Json,
+    CloudwatchEmf { namespace: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct PrometheusConfig {
+    #[serde(default = "default_prometheus_listen")]
+    pub listen: String,
+}
+
+pub fn default_prometheus_listen() -> String {
+    "127.0.0.1:9273".to_string()
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct BgpConfig {
@@ -1091,6 +1122,9 @@ pub struct BgpConfig {
     /// the config; bad entries log a warning and are skipped at injection time.
     #[serde(default)]
     pub originate: Vec<OriginateRoute>,
+    /// Metric emission. None = no telemetry.
+    #[serde(default)]
+    pub telemetry: Option<TelemetryConfig>,
 }
 
 fn default_listen_addr() -> String {
@@ -1136,7 +1170,14 @@ impl BgpConfig {
             enhanced_rr_stale_ttl: default_enhanced_rr_stale_ttl(),
             bgp_ls: BgpLsConfig::default(),
             originate: Vec::new(),
+            telemetry: None,
         }
+    }
+
+    /// Builder-style telemetry setter for single-expression construction.
+    pub fn with_telemetry(mut self, telemetry: TelemetryConfig) -> Self {
+        self.telemetry = Some(telemetry);
+        self
     }
 
     /// RFC 4456: Get effective cluster_id (defaults to router_id)
@@ -1232,6 +1273,10 @@ impl BgpConfig {
             config.bgp_ls.instance_id = bgp_ls.instance_id;
         }
 
+        if let Some(telemetry_block) = &bgp.telemetry {
+            config.telemetry = Some(telemetry_config_from_block(telemetry_block));
+        }
+
         if !has_asn {
             return Err("missing required field 'asn'".into());
         }
@@ -1320,6 +1365,7 @@ impl Default for BgpConfig {
             enhanced_rr_stale_ttl: default_enhanced_rr_stale_ttl(),
             bgp_ls: BgpLsConfig::default(),
             originate: Vec::new(),
+            telemetry: None,
         }
     }
 }
@@ -1450,6 +1496,8 @@ impl BgpConfig {
             None
         };
 
+        let telemetry = self.telemetry.as_ref().map(telemetry_block_from_config);
+
         BgpServiceBody {
             settings,
             peers,
@@ -1463,6 +1511,7 @@ impl BgpConfig {
             bmp_servers,
             rpki_caches,
             bgp_ls,
+            telemetry,
         }
     }
 }
@@ -1539,6 +1588,51 @@ fn bmp_block_from_config(cfg: &BmpConfig) -> BmpServerBlock {
         address: cfg.address.clone(),
         statistics_timeout: cfg.statistics_timeout,
     }
+}
+
+fn telemetry_config_from_block(block: &TelemetryBlock) -> TelemetryConfig {
+    let sink = if block.json {
+        Some(TelemetrySink::Json)
+    } else {
+        block
+            .cloudwatch_emf
+            .as_ref()
+            .map(|emf| TelemetrySink::CloudwatchEmf {
+                namespace: emf.namespace.clone(),
+            })
+    };
+    let prometheus = block.prometheus.as_ref().map(|prom| PrometheusConfig {
+        listen: prom
+            .listen
+            .clone()
+            .unwrap_or_else(default_prometheus_listen),
+    });
+    TelemetryConfig { sink, prometheus }
+}
+
+fn telemetry_block_from_config(cfg: &TelemetryConfig) -> TelemetryBlock {
+    let mut block = match &cfg.sink {
+        Some(TelemetrySink::Json) => TelemetryBlock {
+            json: true,
+            ..Default::default()
+        },
+        Some(TelemetrySink::CloudwatchEmf { namespace }) => TelemetryBlock {
+            cloudwatch_emf: Some(CloudwatchEmfBlock {
+                namespace: namespace.clone(),
+            }),
+            ..Default::default()
+        },
+        None => TelemetryBlock::default(),
+    };
+    block.prometheus = cfg.prometheus.as_ref().map(|prom| PrometheusBlock {
+        // Emit the default listen compactly as `prometheus {}`.
+        listen: if prom.listen == default_prometheus_listen() {
+            None
+        } else {
+            Some(prom.listen.clone())
+        },
+    });
+    block
 }
 
 fn bmp_config_from_block(block: &BmpServerBlock) -> BmpConfig {
@@ -2325,10 +2419,67 @@ service bgp {
             "log-level",
             "grpc-listen-addr",
             "listen-addr",
+            "telemetry",
         ] {
             assert!(
                 !rendered.contains(hidden),
                 "rendered config should omit `{hidden}` at default value:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_telemetry_from_conf_and_round_trip() {
+        let cases = [
+            (
+                "  telemetry {\n    json {}\n  }\n",
+                Some(TelemetrySink::Json),
+                None,
+            ),
+            (
+                "  telemetry {\n    cloudwatch-emf {\n      namespace Rogg/Bgpgg\n    }\n  }\n",
+                Some(TelemetrySink::CloudwatchEmf {
+                    namespace: "Rogg/Bgpgg".to_string(),
+                }),
+                None,
+            ),
+            ("  telemetry {\n  }\n", None, None),
+            (
+                "  telemetry {\n    prometheus {}\n  }\n",
+                None,
+                Some("127.0.0.1:9273"),
+            ),
+            (
+                "  telemetry {\n    json {}\n    prometheus {\n      listen 0.0.0.0:9111\n    }\n  }\n",
+                Some(TelemetrySink::Json),
+                Some("0.0.0.0:9111"),
+            ),
+        ];
+        for (block_text, expected_sink, expected_listen) in cases {
+            let input = format!(
+                "service bgp {{\n  asn 65000\n  router-id 1.1.1.1\n{}}}",
+                block_text
+            );
+            let config = BgpConfig::from_conf_str(&input).unwrap();
+            let telemetry = config.telemetry.as_ref().unwrap();
+            assert_eq!(telemetry.sink, expected_sink, "input: {}", input);
+            assert_eq!(
+                telemetry
+                    .prometheus
+                    .as_ref()
+                    .map(|prom| prom.listen.as_str()),
+                expected_listen,
+                "input: {}",
+                input
+            );
+
+            let rendered = config.to_conf_str();
+            let reparsed = BgpConfig::from_conf_str(&rendered)
+                .unwrap_or_else(|err| panic!("reparse failed:\n{}\nerror: {}", rendered, err));
+            assert_eq!(
+                reparsed.telemetry, config.telemetry,
+                "rendered: {}",
+                rendered
             );
         }
     }

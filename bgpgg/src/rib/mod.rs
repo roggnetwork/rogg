@@ -19,6 +19,7 @@
 //! - Loc-RIB: Local routing table containing best paths (owned by BgpServer)
 //! - Adj-RIB-Out: Per-peer output tables tracking routes exported to peers
 
+mod family_tables;
 mod path;
 pub mod path_id;
 pub mod rib_in;

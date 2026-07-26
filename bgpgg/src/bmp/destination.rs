@@ -14,8 +14,10 @@
 
 use super::msg::BmpMessage;
 use crate::log::{error, info};
+use crate::metrics;
 use std::net::SocketAddr;
 use std::time::Duration;
+use telemetry::{metric, Unit};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
@@ -71,6 +73,14 @@ impl BmpTcpClient {
                 Ok(_) => true,
                 Err(e) => {
                     error!(addr = %self.addr, error = %e, "BMP: Write failed");
+                    metric(
+                        metrics::BMP_CONNECTION_DOWN_COUNT,
+                        1,
+                        Unit::Count,
+                        &[("Destination", &self.addr)],
+                        &[&["Destination"]],
+                        &[],
+                    );
                     self.conn = None; // Trigger reconnect
                     false
                 }

@@ -218,6 +218,7 @@ pub fn tree_config_bgp() -> Vec<Node> {
     nodes.push(bmp_server_subtree());
     nodes.push(rpki_cache_subtree());
     nodes.push(bgp_ls_subtree());
+    nodes.push(telemetry_subtree());
     nodes
 }
 
@@ -438,6 +439,28 @@ fn bgp_ls_subtree() -> Node {
         .children(setting_leaves::<BgpLsKey>(Command::SetBgpLs))
 }
 
+/// `telemetry ...` subtree. json and cloudwatch-emf are mutually exclusive;
+/// enforced in the apply handlers.
+fn telemetry_subtree() -> Node {
+    Node::keyword("telemetry", "Telemetry settings").children(vec![
+        Node::keyword("json", "Emit metrics as JSON log lines").cmd(Command::SetTelemetryJson),
+        Node::keyword("cloudwatch-emf", "Emit metrics as CloudWatch EMF log lines").children(vec![
+            Node::keyword("namespace", "CloudWatch namespace").children(vec![Node::arg(
+                "<namespace>",
+                "Namespace (e.g. Rogg/Bgpgg)",
+                ValueKind::String,
+            )
+            .cmd(Command::SetTelemetryCloudwatchEmf)]),
+        ]),
+        Node::keyword("prometheus", "Prometheus pull endpoint")
+            .cmd(Command::SetTelemetryPrometheus)
+            .children(vec![Node::keyword("listen", "Listen address").children(
+                vec![Node::arg("<addr>", "host:port", ValueKind::AddrPort)
+                    .cmd(Command::SetTelemetryPrometheusListen)],
+            )]),
+    ])
+}
+
 /// `unset ...` subtree mirroring the set surface, sans value tokens.
 fn unset_subtree() -> Vec<Node> {
     let mut nodes = Vec::new();
@@ -544,6 +567,23 @@ fn unset_subtree() -> Vec<Node> {
             .children(bgp_ls_children),
     );
 
+    nodes.push(
+        Node::keyword("telemetry", "Remove the telemetry block or a sub-block")
+            .cmd(Command::UnsetTelemetry)
+            .children(vec![
+                Node::keyword("json", "Remove the json sink").cmd(Command::UnsetTelemetryJson),
+                Node::keyword("cloudwatch-emf", "Remove the cloudwatch-emf sink")
+                    .cmd(Command::UnsetTelemetryCloudwatchEmf),
+                Node::keyword("prometheus", "Remove the prometheus endpoint")
+                    .cmd(Command::UnsetTelemetryPrometheus)
+                    .children(vec![Node::keyword(
+                        "listen",
+                        "Reset listen to the default (127.0.0.1:9273)",
+                    )
+                    .cmd(Command::UnsetTelemetryPrometheusListen)]),
+            ]),
+    );
+
     nodes
 }
 
@@ -583,6 +623,7 @@ mod tests {
             "bmp-server",
             "rpki-cache",
             "bgp-ls",
+            "telemetry",
         ] {
             assert!(names.contains(&fixed), "tree_config_bgp missing {}", fixed);
         }

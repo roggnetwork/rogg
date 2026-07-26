@@ -16,6 +16,7 @@ pub mod bgp;
 pub mod bmp;
 pub mod grpc;
 pub mod log;
+pub mod metrics;
 pub mod net;
 pub mod peer;
 pub mod policy;

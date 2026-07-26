@@ -88,7 +88,7 @@ async fn test_update_missing_well_known_attribute() {
 
 #[tokio::test]
 async fn test_update_malformed_attribute_list() {
-    let (_server, mut peer) = setup_server_and_fake_peer().await;
+    let (server, mut peer) = setup_server_and_fake_peer().await;
 
     // Withdrawn route: 10.11.12.0/24 (prefix length byte followed by prefix bytes)
     let withdrawn_data = &[24, 10, 11, 12];
@@ -106,6 +106,23 @@ async fn test_update_malformed_attribute_list() {
         &BgpError::UpdateMessageError(UpdateMessageError::MalformedAttributeList)
     );
     assert_eq!(notif.data(), &[] as &[u8]);
+
+    let peer_ip = peer.address.clone();
+    // UpdateMessageError = code 3, MalformedAttributeList = subcode 1
+    assert_metric(
+        &server,
+        "NotificationSentCount",
+        &[("Peer", &peer_ip), ("Code", "3")],
+        &[("Subcode", "1")],
+    )
+    .await;
+    assert_metric(
+        &server,
+        "SessionDownCount",
+        &[("Peer", &peer_ip)],
+        &[("Reason", "local-notification")],
+    )
+    .await;
 }
 
 /// RFC 7606: ORIGIN flag errors -> treat-as-withdraw (session stays up)

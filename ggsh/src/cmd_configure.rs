@@ -18,9 +18,10 @@ use std::str::FromStr;
 use conf::bgp::{Afi, Safi, TransportType};
 use conf::language::{Root, Service};
 use conf::language_bgp::{
-    BgpLsBlock, BgpLsKey, BgpServiceBody, BmpServerBlock, BmpServerKey, FamilyBlock,
-    FamilyDirective, FamilyDirectiveKey, OriginateRoute, PeerBlock, PeerKey, PolicyBlock,
-    PolicyRule, PrefixListBlock, RpkiCacheBlock, RpkiCacheKey, Setting, TopKey,
+    BgpLsBlock, BgpLsKey, BgpServiceBody, BmpServerBlock, BmpServerKey, CloudwatchEmfBlock,
+    FamilyBlock, FamilyDirective, FamilyDirectiveKey, OriginateRoute, PeerBlock, PeerKey,
+    PolicyBlock, PolicyRule, PrefixListBlock, PrometheusBlock, RpkiCacheBlock, RpkiCacheKey,
+    Setting, TelemetryBlock, TopKey,
 };
 
 use crate::shell::{Shell, ShellLevel};
@@ -316,6 +317,55 @@ pub fn apply_set_bgp_ls(shell: &mut Shell, key: BgpLsKey, value: &str) -> Result
     Ok(())
 }
 
+pub fn apply_set_telemetry_json(shell: &mut Shell) -> Result<(), String> {
+    let body = bgp_body_mut(shell)?;
+    let telemetry = body.telemetry.get_or_insert_with(TelemetryBlock::default);
+    if telemetry.cloudwatch_emf.is_some() {
+        return Err(
+            "json and cloudwatch-emf are mutually exclusive; unset telemetry cloudwatch-emf first"
+                .into(),
+        );
+    }
+    telemetry.json = true;
+    Ok(())
+}
+
+pub fn apply_set_telemetry_cloudwatch_emf(
+    shell: &mut Shell,
+    namespace: &str,
+) -> Result<(), String> {
+    let body = bgp_body_mut(shell)?;
+    let telemetry = body.telemetry.get_or_insert_with(TelemetryBlock::default);
+    if telemetry.json {
+        return Err(
+            "json and cloudwatch-emf are mutually exclusive; unset telemetry json first".into(),
+        );
+    }
+    telemetry.cloudwatch_emf = Some(CloudwatchEmfBlock {
+        namespace: namespace.to_string(),
+    });
+    Ok(())
+}
+
+pub fn apply_set_telemetry_prometheus(shell: &mut Shell) -> Result<(), String> {
+    let body = bgp_body_mut(shell)?;
+    let telemetry = body.telemetry.get_or_insert_with(TelemetryBlock::default);
+    telemetry
+        .prometheus
+        .get_or_insert_with(PrometheusBlock::default);
+    Ok(())
+}
+
+pub fn apply_set_telemetry_prometheus_listen(shell: &mut Shell, addr: &str) -> Result<(), String> {
+    let body = bgp_body_mut(shell)?;
+    let telemetry = body.telemetry.get_or_insert_with(TelemetryBlock::default);
+    let prometheus = telemetry
+        .prometheus
+        .get_or_insert_with(PrometheusBlock::default);
+    prometheus.listen = Some(addr.to_string());
+    Ok(())
+}
+
 pub fn apply_unset_top(shell: &mut Shell, key: TopKey) -> Result<(), String> {
     let body = bgp_body_mut(shell)?;
     let before = body.settings.len();
@@ -546,6 +596,65 @@ pub fn apply_unset_bgp_ls_setting(shell: &mut Shell, _key: BgpLsKey) -> Result<(
         "instance-id is required when bgp-ls is present; use 'unset bgp-ls' to remove the block"
             .into(),
     )
+}
+
+pub fn apply_unset_telemetry(shell: &mut Shell) -> Result<(), String> {
+    let body = bgp_body_mut(shell)?;
+    if body.telemetry.take().is_none() {
+        return Err("telemetry not set".into());
+    }
+    Ok(())
+}
+
+pub fn apply_unset_telemetry_json(shell: &mut Shell) -> Result<(), String> {
+    let body = bgp_body_mut(shell)?;
+    let telemetry = body
+        .telemetry
+        .as_mut()
+        .filter(|t| t.json)
+        .ok_or_else(|| "telemetry json not set".to_string())?;
+    telemetry.json = false;
+    Ok(())
+}
+
+pub fn apply_unset_telemetry_cloudwatch_emf(shell: &mut Shell) -> Result<(), String> {
+    let body = bgp_body_mut(shell)?;
+    let was_set = body
+        .telemetry
+        .as_mut()
+        .and_then(|t| t.cloudwatch_emf.take())
+        .is_some();
+    if !was_set {
+        return Err("telemetry cloudwatch-emf not set".into());
+    }
+    Ok(())
+}
+
+pub fn apply_unset_telemetry_prometheus(shell: &mut Shell) -> Result<(), String> {
+    let body = bgp_body_mut(shell)?;
+    let was_set = body
+        .telemetry
+        .as_mut()
+        .and_then(|t| t.prometheus.take())
+        .is_some();
+    if !was_set {
+        return Err("telemetry prometheus not set".into());
+    }
+    Ok(())
+}
+
+pub fn apply_unset_telemetry_prometheus_listen(shell: &mut Shell) -> Result<(), String> {
+    let body = bgp_body_mut(shell)?;
+    let was_set = body
+        .telemetry
+        .as_mut()
+        .and_then(|t| t.prometheus.as_mut())
+        .and_then(|p| p.listen.take())
+        .is_some();
+    if !was_set {
+        return Err("telemetry prometheus listen not set".into());
+    }
+    Ok(())
 }
 
 fn bgp_body_mut(shell: &mut Shell) -> Result<&mut BgpServiceBody, String> {
@@ -822,6 +931,23 @@ fn flatten(root: &Root) -> Vec<String> {
         }
         if let Some(bgp_ls) = &body.bgp_ls {
             lines.push(format!("bgp-ls instance-id {}", bgp_ls.instance_id));
+        }
+        if let Some(telemetry) = &body.telemetry {
+            if telemetry.json {
+                lines.push("telemetry json".to_string());
+            }
+            if let Some(emf) = &telemetry.cloudwatch_emf {
+                lines.push(format!(
+                    "telemetry cloudwatch-emf namespace {}",
+                    emf.namespace
+                ));
+            }
+            if let Some(prometheus) = &telemetry.prometheus {
+                match &prometheus.listen {
+                    Some(addr) => lines.push(format!("telemetry prometheus listen {}", addr)),
+                    None => lines.push("telemetry prometheus".to_string()),
+                }
+            }
         }
     }
     lines
@@ -1156,6 +1282,111 @@ mod tests {
 
         let body = bgp_body_mut(&mut shell).unwrap();
         assert_eq!(body.bgp_ls.as_ref().unwrap().instance_id, 99);
+    }
+
+    #[test]
+    fn test_apply_set_telemetry() {
+        let (_dir, mut shell) = setup_bgp();
+
+        apply_set_telemetry_json(&mut shell).unwrap();
+        apply_set_telemetry_prometheus(&mut shell).unwrap();
+
+        let body = bgp_body_mut(&mut shell).unwrap();
+        let telemetry = body.telemetry.as_ref().unwrap();
+        assert!(telemetry.json);
+        assert_eq!(telemetry.prometheus, Some(PrometheusBlock { listen: None }));
+
+        // json blocks cloudwatch-emf and vice versa.
+        let err = apply_set_telemetry_cloudwatch_emf(&mut shell, "Rogg/Bgpgg").unwrap_err();
+        assert!(err.contains("mutually exclusive"));
+
+        apply_unset_telemetry_json(&mut shell).unwrap();
+        apply_set_telemetry_cloudwatch_emf(&mut shell, "Rogg/Bgpgg").unwrap();
+        let err = apply_set_telemetry_json(&mut shell).unwrap_err();
+        assert!(err.contains("mutually exclusive"));
+
+        let body = bgp_body_mut(&mut shell).unwrap();
+        let telemetry = body.telemetry.as_ref().unwrap();
+        assert!(!telemetry.json);
+        assert_eq!(
+            telemetry.cloudwatch_emf.as_ref().unwrap().namespace,
+            "Rogg/Bgpgg"
+        );
+    }
+
+    fn prometheus_listen(shell: &mut Shell) -> Option<String> {
+        let body = bgp_body_mut(shell).unwrap();
+        let telemetry = body.telemetry.as_ref().unwrap();
+        telemetry.prometheus.as_ref().unwrap().listen.clone()
+    }
+
+    #[test]
+    fn test_apply_set_telemetry_prometheus_listen() {
+        let (_dir, mut shell) = setup_bgp();
+
+        apply_set_telemetry_prometheus_listen(&mut shell, "0.0.0.0:9273").unwrap();
+        assert_eq!(
+            prometheus_listen(&mut shell).as_deref(),
+            Some("0.0.0.0:9273")
+        );
+
+        // Bare `telemetry prometheus` keeps the configured listen.
+        apply_set_telemetry_prometheus(&mut shell).unwrap();
+        assert_eq!(
+            prometheus_listen(&mut shell).as_deref(),
+            Some("0.0.0.0:9273")
+        );
+
+        apply_unset_telemetry_prometheus_listen(&mut shell).unwrap();
+        assert!(prometheus_listen(&mut shell).is_none());
+    }
+
+    #[test]
+    fn test_apply_unset_telemetry() {
+        let (_dir, mut shell) = setup_bgp();
+
+        apply_set_telemetry_json(&mut shell).unwrap();
+        apply_set_telemetry_prometheus(&mut shell).unwrap();
+
+        apply_unset_telemetry_prometheus(&mut shell).unwrap();
+        let body = bgp_body_mut(&mut shell).unwrap();
+        assert!(body.telemetry.as_ref().unwrap().prometheus.is_none());
+
+        apply_unset_telemetry(&mut shell).unwrap();
+        let body = bgp_body_mut(&mut shell).unwrap();
+        assert!(body.telemetry.is_none());
+
+        for err in [
+            apply_unset_telemetry(&mut shell),
+            apply_unset_telemetry_json(&mut shell),
+            apply_unset_telemetry_cloudwatch_emf(&mut shell),
+            apply_unset_telemetry_prometheus(&mut shell),
+            apply_unset_telemetry_prometheus_listen(&mut shell),
+        ] {
+            assert!(err.is_err(), "expected unset error");
+        }
+    }
+
+    #[test]
+    fn test_flatten_telemetry() {
+        let (_dir, mut shell) = setup_bgp();
+
+        apply_set_telemetry_json(&mut shell).unwrap();
+        apply_set_telemetry_prometheus(&mut shell).unwrap();
+
+        let mut lines = flatten(shell.candidate.as_ref().unwrap());
+        lines.sort();
+        assert_eq!(
+            lines,
+            vec![
+                "telemetry json".to_string(),
+                "telemetry prometheus".to_string()
+            ]
+        );
+
+        apply_set_telemetry_prometheus_listen(&mut shell, "0.0.0.0:9273").unwrap();
+        let lines = flatten(shell.candidate.as_ref().unwrap());
+        assert!(lines.contains(&"telemetry prometheus listen 0.0.0.0:9273".to_string()));
     }
 
     #[test]

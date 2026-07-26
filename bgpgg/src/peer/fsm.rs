@@ -34,6 +34,13 @@ pub enum BgpState {
     Established,
 }
 
+impl BgpState {
+    /// State code per RFC 4271 numbering: 1=Idle .. 6=Established.
+    pub fn code(self) -> u8 {
+        self as u8 + 1
+    }
+}
+
 /// BGP FSM events as defined in RFC 4271 Section 8.1
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FsmEvent {
@@ -522,6 +529,21 @@ mod tests {
     fn test_initial_state() {
         let fsm = Fsm::with_state(BgpState::Connect, false);
         assert_eq!(fsm.state(), BgpState::Connect);
+    }
+
+    #[test]
+    fn test_state_code() {
+        let cases = [
+            (BgpState::Idle, 1),
+            (BgpState::Connect, 2),
+            (BgpState::Active, 3),
+            (BgpState::OpenSent, 4),
+            (BgpState::OpenConfirm, 5),
+            (BgpState::Established, 6),
+        ];
+        for (state, code) in cases {
+            assert_eq!(state.code(), code, "{state:?}");
+        }
     }
 
     #[test]

@@ -18,10 +18,12 @@ use super::{Peer, PeerError, PeerOp, TcpConnection};
 use crate::bgp::msg::{BgpMessage, Message};
 use crate::bgp::msg_notification::{BgpError, CeaseSubcode, NotificationMessage, OpenMessageError};
 use crate::log::{debug, error, info};
+use crate::metrics;
 use crate::server::ops::ServerOp;
 use crate::server::AdminState;
 use crate::types::PeerDownReason;
 use std::time::Duration;
+use telemetry::{metric, Unit};
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
@@ -203,6 +205,15 @@ impl Peer {
 
     /// Handle received NOTIFICATION and generate appropriate event (Event 24 or 25).
     pub(super) async fn handle_notification_received(&mut self, notif: &NotificationMessage) {
+        metric(
+            metrics::NOTIFICATION_RECEIVED_COUNT,
+            1,
+            Unit::Count,
+            &[("Peer", &self.addr), ("Code", &notif.error().error_code())],
+            &[&["Peer"], &["Code"], &["Peer", "Code"]],
+            &[("Subcode", &notif.error().error_subcode())],
+        );
+
         // RFC 5492: if peer doesn't understand capabilities, suppress them on retry.
         if matches!(
             notif.error(),
@@ -341,6 +352,14 @@ impl Peer {
 
     /// Handle HoldTimer expiration - sends hold timer expired notification and transitions to Idle
     pub(super) async fn handle_hold_timer_expires(&mut self) -> Result<(), PeerError> {
+        metric(
+            metrics::HOLD_TIMER_EXPIRED_COUNT,
+            1,
+            Unit::Count,
+            &[("Peer", &self.addr)],
+            &[&["Peer"]],
+            &[],
+        );
         let notif = NotificationMessage::new(BgpError::HoldTimerExpired, vec![]);
         let _ = self.send_notification(notif.clone()).await;
         self.disconnect(true, PeerDownReason::LocalNotification(notif));
@@ -388,6 +407,7 @@ pub(super) mod tests {
     use crate::peer::{BgpState, Fsm, LocalConfig, PeerStatistics, SessionType};
     use crate::server::ConnectionType;
     use conf::bgp::PeerConfig;
+    use std::collections::HashSet;
     use std::net::SocketAddr;
     use std::time::Duration;
     use tokio::io::AsyncReadExt;
@@ -429,6 +449,7 @@ pub(super) mod tests {
             addr: addr.ip(),
             port: addr.port(),
             fsm: Fsm::with_state(state, false),
+            convergence_reported: HashSet::new(),
             conn: Some(TcpConnection::new(tcp_tx, tcp_rx)),
             asn: Some(65001),
             bgp_id: Some(std::net::Ipv4Addr::new(10, 0, 0, 1)),
