@@ -363,6 +363,15 @@ impl ConnectionState {
     }
 }
 
+/// Peer identity captured when a BMP PeerUp is emitted. Reused for the matching
+/// PeerDown so the two agree even after the connection has been reset.
+#[derive(Clone, Copy)]
+pub struct BmpPeerIdentity {
+    pub peer_as: u32,
+    pub peer_bgp_id: u32,
+    pub use_4byte_asn: bool,
+}
+
 /// Peer configuration and state stored in server's HashMap.
 /// The peer IP is the HashMap key.
 ///
@@ -390,6 +399,11 @@ pub struct PeerInfo {
     pub llgr_timers: ServerOpTimers<AfiSafi>,
     /// RFC 7313: Running enhanced route refresh stale timers per AFI/SAFI
     pub rr_stale_timers: ServerOpTimers<AfiSafi>,
+    /// Identity of the BMP session if a PeerUp has been emitted for it.
+    /// Drives exactly-once PeerUp/PeerDown: active-active peering can briefly
+    /// drive both connection slots to Established before collision resolves,
+    /// but BMP must see a single PeerUp and a single matching PeerDown.
+    pub bmp_session: Option<BmpPeerIdentity>,
 }
 
 /// Keyed timer map. Each key has at most one running timer that sends a
@@ -478,6 +492,7 @@ impl PeerInfo {
             disabled_afi_safi: HashSet::new(),
             llgr_timers: ServerOpTimers::new(),
             rr_stale_timers: ServerOpTimers::new(),
+            bmp_session: None,
         }
     }
 
@@ -1239,17 +1254,15 @@ impl BgpServer {
 
         entry.send_to_all(|| PeerOp::Shutdown(CeaseSubcode::PeerDeconfigured));
 
-        if let Some(conn) = entry.established_conn() {
-            if let (Some(asn), Some(bgp_id)) = (conn.asn, conn.bgp_id) {
-                let use_4byte_asn = entry.supports_4byte_asn();
-                self.broadcast_bmp(BmpOp::PeerDown {
-                    peer_ip,
-                    peer_as: asn,
-                    peer_bgp_id: bgp_id,
-                    reason: PeerDownReason::PeerDeConfigured,
-                    use_4byte_asn,
-                });
-            }
+        // BMP PeerDown only if a PeerUp was emitted for this peer.
+        if let Some(identity) = entry.bmp_session {
+            self.broadcast_bmp(BmpOp::PeerDown {
+                peer_ip,
+                peer_as: identity.peer_as,
+                peer_bgp_id: identity.peer_bgp_id,
+                reason: PeerDownReason::PeerDeConfigured,
+                use_4byte_asn: identity.use_4byte_asn,
+            });
         }
 
         #[cfg(target_os = "freebsd")]

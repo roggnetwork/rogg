@@ -72,17 +72,25 @@ async fn test_add_bmp_server_with_existing_peers() {
     )
     .await;
 
-    // Wait for routes to be received
+    // Wait for the full mesh to converge: every server holds both routes.
+    // This makes the BMP dump deterministic - the server's adj-rib-in has all
+    // 4 paths (each prefix learned from both peers) before the collector
+    // attaches, so no live RouteMonitoring races the initial dump.
     poll_until(
         || async {
-            let routes = server
-                .client
-                .list_routes(ListRoutesRequest::default())
-                .await
-                .unwrap();
-            routes.len() == 2
+            for srv in [&server, &peer1, &peer2] {
+                let routes = srv
+                    .client
+                    .list_routes(ListRoutesRequest::default())
+                    .await
+                    .unwrap();
+                if routes.len() != 2 {
+                    return false;
+                }
+            }
+            true
         },
-        "Timeout waiting for routes",
+        "Timeout waiting for mesh route convergence",
     )
     .await;
 
@@ -103,20 +111,30 @@ async fn test_add_bmp_server_with_existing_peers() {
     )
     .await;
 
-    let mut bmp_server = FakeBmpServer::new().await;
-    setup_bmp_monitoring(&mut server, &mut bmp_server).await;
-
-    // Should receive peer up for ONLY the 2 established peers (not the idle one)
-    // Read in any order then sort for comparison
-    let mut peer_ups = [
-        bmp_server.read_peer_up().await,
-        bmp_server.read_peer_up().await,
-    ];
-    peer_ups.sort_by_key(|p| p.peer_header.peer_address);
-
     // Sort peers by address
     let mut peers = [peer1, peer2];
     peers.sort_by_key(|p| p.address);
+
+    // Both routes in mesh
+    let route_1 = IpNetwork::V4(Ipv4Net {
+        address: Ipv4Addr::new(10, 0, 0, 0),
+        prefix_length: 24,
+    });
+    let route_2 = IpNetwork::V4(Ipv4Net {
+        address: Ipv4Addr::new(10, 0, 1, 0),
+        prefix_length: 24,
+    });
+
+    let mut bmp_server = FakeBmpServer::new().await;
+    setup_bmp_monitoring(&mut server, &mut bmp_server).await;
+
+    // Should receive PeerUp for ONLY the 2 established peers (not the idle one)
+    // and a RouteMonitoring for each peer's adj-rib-in (2 routes per peer = 4
+    // total in the mesh). Read tolerant of collision churn under load.
+    let (mut peer_ups, route_messages) = bmp_server
+        .collect_initial_dump(&[peers[0].address, peers[1].address], &[route_1, route_2])
+        .await;
+    peer_ups.sort_by_key(|p| p.peer_header.peer_address);
 
     // Verify each peer up message
     assert_bmp_peer_up_msg(
@@ -139,24 +157,6 @@ async fn test_add_bmp_server_with_existing_peers() {
             peer_port: None, // Port is non-deterministic with active-active peering
         },
     );
-
-    // Should receive route monitoring messages (2 routes per peer = 4 total in mesh)
-    // Each peer's Adj-RIB-In contains routes received from the other peer too
-    // Collect all 4 route monitoring messages in any order
-    let mut route_messages = Vec::new();
-    for _ in 0..4 {
-        route_messages.push(bmp_server.read_route_monitoring().await);
-    }
-
-    // Both routes in mesh
-    let route_1 = IpNetwork::V4(Ipv4Net {
-        address: Ipv4Addr::new(10, 0, 0, 0),
-        prefix_length: 24,
-    });
-    let route_2 = IpNetwork::V4(Ipv4Net {
-        address: Ipv4Addr::new(10, 0, 1, 0),
-        prefix_length: 24,
-    });
 
     // Count occurrences of each route across all messages
     let mut route_1_count = 0;
