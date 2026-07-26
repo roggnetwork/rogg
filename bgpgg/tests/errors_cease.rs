@@ -627,3 +627,175 @@ async fn test_collision_candidate_asn_preserved_on_promotion() {
     // Verify promoted connection has correct ASN (65002, not 0)
     poll_peers(&server, vec![incoming_peer.to_peer(BgpState::Established)]).await;
 }
+
+/// RFC 4271 6.8: a collision loser that already reached Established must still
+/// be torn down when it loses. The design resolves collisions at OpenConfirm,
+/// but under real latency/load one connection can reach Established before the
+/// other's OPEN is processed, so `check_collision` runs late and sends
+/// `CollisionLost` to an already-Established connection.
+///
+/// This drives that deterministically: the outgoing connection reaches
+/// Established while the incoming slot is empty (no collision yet), then an
+/// incoming connection wins the collision. The server must send Cease
+/// (ConnectionCollisionResolution) on the losing outgoing connection.
+///
+/// Bug: `state_established.rs` ignores `CollisionLost` ("Ignored when
+/// connected"), so the loser is never torn down and lingers until its TCP
+/// dies, wedging the incoming slot. Without the fix, no Cease arrives.
+#[tokio::test]
+async fn test_collision_established_loser_receives_cease() {
+    // FakePeer listens, server connects outgoing. Server BGP ID (1.1.1.1) is
+    // lower than the peer's (3.3.3.3), so the incoming connection wins.
+    let mut peer = FakePeer::new("127.0.0.3:0", 65002).await;
+
+    let mut config = BgpConfig::new(65001, "127.0.0.1:0", Ipv4Addr::new(1, 1, 1, 1), 300);
+    config
+        .insert_peer(PeerConfig {
+            address: "127.0.0.3".to_string(),
+            port: peer.port(),
+            ..Default::default()
+        })
+        .unwrap();
+    let server = start_test_server(config).await;
+
+    // Accept the server's outgoing dial (OpenSent), then bring in the incoming
+    // connection BEFORE the outgoing establishes -- otherwise the server
+    // rejects the second connection ("outgoing already Established"). Now both
+    // slots are occupied and neither has a BGP ID yet.
+    peer.accept().await;
+    peer.read_open().await;
+    let mut incoming_peer = FakePeer {
+        stream: Some(peer.connect_to(&server).await),
+        address: "127.0.0.3".to_string(),
+        asn: 65002,
+        listener: None,
+        supports_4byte_asn: false,
+        add_path: AddPathMask::NONE,
+    };
+
+    // Drive the OUTGOING connection to Established. The incoming slot still has
+    // no BGP ID, so `check_collision` does not resolve yet.
+    peer.send_open(65002, Ipv4Addr::new(3, 3, 3, 3), 300).await;
+    peer.read_keepalive().await;
+    peer.send_keepalive().await;
+    poll_until(
+        || async {
+            let peers = server.client.get_peers().await.unwrap();
+            peers.len() == 1 && peers[0].state == BgpState::Established as i32
+        },
+        "Timeout waiting for outgoing to reach Established",
+    )
+    .await;
+
+    // Complete the incoming OPEN -> both slots now have a BGP ID -> collision
+    // resolves late, incoming wins, and CollisionLost is delivered to the
+    // already-Established outgoing connection.
+    incoming_peer.read_open().await;
+    incoming_peer
+        .send_open(65002, Ipv4Addr::new(3, 3, 3, 3), 300)
+        .await;
+
+    // The Established loser must receive Cease(ConnectionCollisionResolution).
+    let notif = tokio::time::timeout(std::time::Duration::from_secs(3), peer.read_notification())
+        .await
+        .expect(
+            "collision loser in Established did not receive Cease within 3s -- \
+             CollisionLost is ignored in the Established state",
+        );
+    assert_eq!(
+        notif.error(),
+        &BgpError::Cease(CeaseSubcode::ConnectionCollisionResolution)
+    );
+}
+
+/// After a late collision, the losing (outgoing) task exits. The winning
+/// incoming connection is now the only one. When it later drops, the incoming
+/// slot must be freed so the peer can accept a fresh connection.
+///
+/// Bug: an accepted incoming connection has no reconnect task, but the
+/// disconnect path resets its slot to Idle and KEEPS it (meant for the
+/// persistent outgoing task). The kept slot points at a dead task, so every
+/// later inbound is refused with "incoming slot already occupied" -- the peer
+/// wedges permanently.
+#[tokio::test]
+async fn test_collision_incoming_slot_freed_after_winner_drops() {
+    let mut peer = FakePeer::new("127.0.0.3:0", 65002).await;
+
+    let mut config = BgpConfig::new(65001, "127.0.0.1:0", Ipv4Addr::new(1, 1, 1, 1), 300);
+    config
+        .insert_peer(PeerConfig {
+            address: "127.0.0.3".to_string(),
+            port: peer.port(),
+            ..Default::default()
+        })
+        .unwrap();
+    let server = start_test_server(config).await;
+
+    // Late collision: both slots occupied, outgoing establishes, incoming wins.
+    peer.accept().await;
+    peer.read_open().await;
+    let mut winner = FakePeer {
+        stream: Some(peer.connect_to(&server).await),
+        address: "127.0.0.3".to_string(),
+        asn: 65002,
+        listener: None,
+        supports_4byte_asn: false,
+        add_path: AddPathMask::NONE,
+    };
+    peer.send_open(65002, Ipv4Addr::new(3, 3, 3, 3), 300).await;
+    peer.read_keepalive().await;
+    peer.send_keepalive().await;
+    poll_until(
+        || async {
+            let peers = server.client.get_peers().await.unwrap();
+            peers.len() == 1 && peers[0].state == BgpState::Established as i32
+        },
+        "Timeout waiting for outgoing to reach Established",
+    )
+    .await;
+    winner.read_open().await;
+    winner
+        .send_open(65002, Ipv4Addr::new(3, 3, 3, 3), 300)
+        .await;
+    winner.read_keepalive().await;
+    winner.send_keepalive().await;
+    // Loser gets torn down (fix #1); drain its Cease.
+    let _ = peer.read_notification().await;
+
+    // The winning incoming connection is the session.
+    poll_until(
+        || async {
+            let peers = server.client.get_peers().await.unwrap();
+            peers.len() == 1 && peers[0].state == BgpState::Established as i32
+        },
+        "Timeout waiting for winning incoming to reach Established",
+    )
+    .await;
+
+    // The winner drops.
+    drop(winner);
+    poll_until(
+        || async {
+            let peers = server.client.get_peers().await.unwrap();
+            peers.len() == 1 && peers[0].state != BgpState::Established as i32
+        },
+        "Timeout waiting for session to go down after winner dropped",
+    )
+    .await;
+
+    // The remote re-dials. The incoming slot must be free so this is accepted
+    // and re-establishes -- not rejected as "slot already occupied".
+    let mut recon = FakePeer {
+        stream: Some(peer.connect_to(&server).await),
+        address: "127.0.0.3".to_string(),
+        asn: 65002,
+        listener: None,
+        supports_4byte_asn: false,
+        add_path: AddPathMask::NONE,
+    };
+    recon.read_open().await;
+    recon.send_open(65002, Ipv4Addr::new(3, 3, 3, 3), 300).await;
+    recon.read_keepalive().await;
+    recon.send_keepalive().await;
+    poll_peers(&server, vec![recon.to_peer(BgpState::Established)]).await;
+}

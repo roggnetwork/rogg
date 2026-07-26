@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use super::metrics::MetricsSnapshot;
-use super::{AdminState, BgpServer, BmpOp, BmpPeerStats, ConnectionType, PeerInfo};
+use super::{
+    AdminState, BgpServer, BmpOp, BmpPeerIdentity, BmpPeerStats, ConnectionType, PeerInfo,
+};
 use crate::bgp::community;
 use crate::bgp::ext_community::is_rpki_state_community;
 use crate::bgp::msg_notification::{BgpError, CeaseSubcode, NotificationMessage};
@@ -437,6 +439,20 @@ impl BgpServer {
         gr_afi_safis: Vec<AfiSafi>,
         conn_type: ConnectionType,
     ) {
+        // The persistent (reconnecting) task lives in the outgoing slot for
+        // active peers, the incoming slot for passive peers. A connection in
+        // the other slot is a transient accepted connection with no reconnect
+        // task -- its slot must be freed on disconnect, not kept.
+        let persistent_conn_type = if self
+            .config
+            .find_peer(peer_ip)
+            .is_some_and(|cfg| cfg.passive_mode)
+        {
+            ConnectionType::Incoming
+        } else {
+            ConnectionType::Outgoing
+        };
+
         let Some(peer) = self.peers.get_mut(&peer_ip) else {
             return;
         };
@@ -444,8 +460,11 @@ impl BgpServer {
         // Check if the disconnect is from the correct slot
         let slot_exists = peer.slot(conn_type).is_some();
         if !slot_exists {
-            // Stale disconnect from old connection
+            // Stale disconnect from old connection. Still reconcile BMP: this can
+            // be the moment the last Established connection went away (e.g. a
+            // collision loser that had reached Established).
             debug!(%peer_ip, ?conn_type, "ignoring stale disconnect");
+            self.bmp_peer_down_if_ended(peer_ip, reason);
             return;
         }
 
@@ -454,11 +473,6 @@ impl BgpServer {
             .slot(conn_type)
             .map(|c| c.state == BgpState::Established)
             .unwrap_or(false);
-
-        let bmp_peer_info = peer.slot(conn_type).and_then(|c| match (c.asn, c.bgp_id) {
-            (Some(asn), Some(bgp_id)) => Some((asn, bgp_id, peer.supports_4byte_asn())),
-            _ => None,
-        });
 
         // Check if there's another connection in the other slot
         let other_slot_active = match conn_type {
@@ -470,15 +484,23 @@ impl BgpServer {
             // Other connection exists - just clear this slot
             *peer.slot_mut(conn_type) = None;
             debug!(%peer_ip, ?conn_type, "connection slot cleared, other connection active");
+            self.bmp_peer_down_if_ended(peer_ip, reason);
             return;
         }
 
-        // Keep the slot but reset to Idle state (preserve peer_tx for reconnect)
-        if let Some(conn) = peer.slot_mut(conn_type).as_mut() {
-            conn.state = BgpState::Idle;
-            conn.conn_info = None;
-            conn.asn = None;
-            conn.bgp_id = None;
+        // The persistent slot keeps its peer_tx and resets to Idle so the task
+        // reconnects. A transient accepted connection has no reconnect task, so
+        // clear its slot -- otherwise it lingers as a dead entry that rejects
+        // every future inbound with "incoming slot already occupied".
+        if conn_type == persistent_conn_type {
+            if let Some(conn) = peer.slot_mut(conn_type).as_mut() {
+                conn.state = BgpState::Idle;
+                conn.conn_info = None;
+                conn.asn = None;
+                conn.bgp_id = None;
+            }
+        } else {
+            *peer.slot_mut(conn_type) = None;
         }
         peer.adj_rib_out.clear();
         peer.rr_stale_timers.cancel_all();
@@ -507,15 +529,33 @@ impl BgpServer {
             self.propagate_routes(delta, Some(peer_ip)).await;
         }
 
-        // BMP: Peer Down notification (only if session reached ESTABLISHED)
-        if let Some((peer_as, peer_bgp_id, use_4byte_asn)) = bmp_peer_info {
-            self.broadcast_bmp(BmpOp::PeerDown {
-                peer_ip,
-                peer_as,
-                peer_bgp_id,
-                reason,
-                use_4byte_asn,
-            });
+        // BMP: Peer Down notification (only if a PeerUp was emitted and no
+        // Established connection remains).
+        self.bmp_peer_down_if_ended(peer_ip, reason);
+    }
+
+    /// Emit a BMP PeerDown if the peer's session just ended: a PeerUp was
+    /// outstanding and no connection is Established anymore. Idempotent; clears
+    /// the stored session identity so the next establishment emits a PeerUp.
+    fn bmp_peer_down_if_ended(&mut self, peer_ip: IpAddr, reason: PeerDownReason) {
+        let Some(peer) = self.peers.get(&peer_ip) else {
+            return;
+        };
+        if peer.established_conn().is_some() {
+            return;
+        }
+        let Some(identity) = peer.bmp_session else {
+            return;
+        };
+        self.broadcast_bmp(BmpOp::PeerDown {
+            peer_ip,
+            peer_as: identity.peer_as,
+            peer_bgp_id: identity.peer_bgp_id,
+            reason,
+            use_4byte_asn: identity.use_4byte_asn,
+        });
+        if let Some(peer) = self.peers.get_mut(&peer_ip) {
+            peer.bmp_session = None;
         }
     }
 
@@ -530,29 +570,48 @@ impl BgpServer {
             return;
         };
 
-        // Send BMP PeerUp
-        if let (Some(asn), Some(bgp_id), Some(conn_info)) = (conn.asn, conn.bgp_id, &conn.conn_info)
-        {
-            let use_4byte_asn = peer.supports_4byte_asn();
-            self.broadcast_bmp(BmpOp::PeerUp {
-                peer_ip,
-                peer_as: asn,
-                peer_bgp_id: bgp_id,
-                local_address: conn_info.local_address,
-                local_port: conn_info.local_port,
-                remote_port: conn_info.remote_port,
-                sent_open: conn_info.sent_open.clone(),
-                received_open: conn_info.received_open.clone(),
-                use_4byte_asn,
-            });
-        }
-
         // Extract capabilities and peer_tx before propagate_routes.
         // Capabilities are always present for an established connection.
         let Some(capabilities) = conn.capabilities.clone() else {
             return;
         };
         let peer_tx = conn.peer_tx.clone();
+
+        // BMP PeerUp: emit once per session. Active-active peering can drive
+        // both connection slots to Established before collision resolves; only
+        // the first transition emits a PeerUp.
+        let peer_up = if peer.bmp_session.is_none() {
+            match (conn.asn, conn.bgp_id, &conn.conn_info) {
+                (Some(asn), Some(bgp_id), Some(conn_info)) => Some((
+                    BmpPeerIdentity {
+                        peer_as: asn,
+                        peer_bgp_id: bgp_id,
+                        use_4byte_asn: peer.supports_4byte_asn(),
+                    },
+                    conn_info.clone(),
+                )),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        if let Some((identity, conn_info)) = peer_up {
+            self.broadcast_bmp(BmpOp::PeerUp {
+                peer_ip,
+                peer_as: identity.peer_as,
+                peer_bgp_id: identity.peer_bgp_id,
+                local_address: conn_info.local_address,
+                local_port: conn_info.local_port,
+                remote_port: conn_info.remote_port,
+                sent_open: conn_info.sent_open,
+                received_open: conn_info.received_open,
+                use_4byte_asn: identity.use_4byte_asn,
+            });
+            if let Some(peer) = self.peers.get_mut(&peer_ip) {
+                peer.bmp_session = Some(identity);
+            }
+        }
 
         // RFC 7947: Warn if route-server client doesn't have ADD-PATH enabled
         if let Some(cfg) = self.config.find_peer(peer_ip) {

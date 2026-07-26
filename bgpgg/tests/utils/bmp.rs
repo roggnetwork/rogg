@@ -534,6 +534,68 @@ impl FakeBmpServer {
         }
     }
 
+    /// Read the initial BMP dump for a newly attached collector, tolerating
+    /// collision churn. Active-active peering can, under load, keep both
+    /// connection slots briefly Established and resolve the collision after the
+    /// dump has started, producing extra PeerDown / re-PeerUp / re-sent
+    /// RouteMonitoring. This drains messages until a PeerUp has been seen for
+    /// every `expected_peers` entry and an announce RouteMonitoring for every
+    /// (peer, route) pair, keeping the last seen of each so the returned set
+    /// reflects the converged state. Churn (PeerDown, duplicates) is ignored.
+    pub async fn collect_initial_dump(
+        &mut self,
+        expected_peers: &[IpAddr],
+        expected_routes: &[IpNetwork],
+    ) -> (Vec<PeerUpMessage>, Vec<RouteMonitoringMessage>) {
+        let mut peer_ups: Vec<PeerUpMessage> = Vec::new();
+        let mut route_monitorings: Vec<RouteMonitoringMessage> = Vec::new();
+
+        loop {
+            let have_peer_ups = expected_peers
+                .iter()
+                .all(|addr| peer_ups.iter().any(|p| p.peer_header.peer_address == *addr));
+            let have_routes = expected_peers.iter().all(|addr| {
+                expected_routes.iter().all(|route| {
+                    route_monitorings.iter().any(|rm| {
+                        rm.peer_header().peer_address == *addr
+                            && rm.bgp_update().nlri_prefixes() == vec![*route]
+                    })
+                })
+            });
+            if have_peer_ups && have_routes {
+                break;
+            }
+
+            let (msg_type, body) = self.read_message().await;
+            if msg_type == BmpMessageType::PeerUpNotification.as_u8() {
+                let peer_up = self.parse_peer_up_from_body(&body);
+                let addr = peer_up.peer_header.peer_address;
+                if expected_peers.contains(&addr) {
+                    peer_ups.retain(|p| p.peer_header.peer_address != addr);
+                    peer_ups.push(peer_up);
+                }
+            } else if msg_type == BmpMessageType::RouteMonitoring.as_u8() {
+                let rm = self.parse_route_monitoring_from_body(&body);
+                let addr = rm.peer_header().peer_address;
+                let nlri = rm.bgp_update().nlri_prefixes();
+                let is_expected = expected_peers.contains(&addr)
+                    && nlri.len() == 1
+                    && expected_routes.contains(&nlri[0]);
+                if is_expected {
+                    route_monitorings.retain(|m| {
+                        !(m.peer_header().peer_address == addr
+                            && m.bgp_update().nlri_prefixes() == nlri)
+                    });
+                    route_monitorings.push(rm);
+                }
+            }
+            // Any other message (PeerDown from collision churn, statistics) is
+            // ignored.
+        }
+
+        (peer_ups, route_monitorings)
+    }
+
     fn parse_peer_up_from_body(&self, body: &[u8]) -> PeerUpMessage {
         let peer_header = parse_peer_header(body);
         let mut offset = PEER_HEADER_SIZE;
@@ -625,10 +687,11 @@ impl FakeBmpServer {
         let peer_header = parse_peer_header(body);
         let bgp_msg_offset = PEER_HEADER_SIZE;
         let bgp_body_offset = bgp_msg_offset + BGP_HEADER_SIZE_BYTES;
+        // BMP encodes UPDATEs with 4-byte ASN per RFC 7854.
         let bgp_update = UpdateMessage::from_bytes(
             body[bgp_body_offset..].to_vec(),
             MessageFormat {
-                use_4byte_asn: false,
+                use_4byte_asn: true,
                 add_path: AddPathMask::NONE,
                 is_ebgp: false,
                 enhanced_rr: false,
