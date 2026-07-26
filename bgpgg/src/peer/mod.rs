@@ -892,8 +892,7 @@ impl Peer {
                         BgpMessage::Open(open) => {
                             if self.conn_pending.is_some() {
                                 if self.local_wins_collision(&open) {
-                                    info!(peer_ip = %self.addr, "collision: dialed connection wins, dropping accepted connection");
-                                    self.conn_pending = None;
+                                    self.resolve_collision_dialed_wins();
                                 } else {
                                     // The OPEN arrived on the losing connection; discard it.
                                     self.adopt_pending_after_collision_loss(None).await;

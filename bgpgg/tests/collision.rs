@@ -20,11 +20,18 @@ pub use utils::*;
 use bgpgg::bgp::msg::{read_bgp_message, BgpMessage, Message, PRE_OPEN_FORMAT};
 use bgpgg::bgp::msg_notification::{BgpError, CeaseSubcode, NotificationMessage};
 use bgpgg::grpc::proto::BgpState;
+use bgpgg::metrics;
 use conf::bgp::BgpConfig;
 #[allow(hidden_glob_reexports)]
 use conf::bgp::PeerConfig;
 use std::net::Ipv4Addr;
-use tokio::time::sleep;
+
+/// Wait until the server emitted a collision metric for the fake peer.
+/// The collision FSM has no externally visible state transitions while a
+/// candidate is held, so tests synchronize on these events.
+async fn poll_collision_event(server: &TestServer, name: &str) {
+    assert_metric(server, name, &[("Peer", "127.0.0.3")], &[]).await;
+}
 
 /// RFC 4271 6.8: a connection arriving after the handshake passed OpenSent is
 /// not a collision candidate. The accepted connection is dropped and the
@@ -403,9 +410,7 @@ async fn setup_collision(
     peer.read_open().await;
 
     let candidate = peer.connect_again(&server).await;
-    // No externally observable signal exists for "candidate held" (the FSM
-    // stays in OpenSent), so give the accept path a moment to route it.
-    sleep(Duration::from_millis(300)).await;
+    poll_collision_event(&server, metrics::COLLISION_DETECTED_COUNT).await;
 
     (peer, server, candidate)
 }
@@ -596,10 +601,20 @@ async fn test_collision_delay_open() {
             .unwrap();
         let server = start_test_server(config).await;
 
-        // Server dials and sits in Connect with DelayOpen running.
+        // Server dials and sits in Connect with DelayOpen running. accept()
+        // only proves the TCP handshake finished; wait until the peer task
+        // registered the dialed connection, or the candidate would be
+        // adopted as primary instead of held.
         peer.accept().await;
+        assert_metric(
+            &server,
+            metrics::TCP_CONNECTION_COUNT,
+            &[("Peer", "127.0.0.3"), ("Direction", "Dialed")],
+            &[],
+        )
+        .await;
         let mut candidate = peer.connect_again(&server).await;
-        sleep(Duration::from_millis(300)).await;
+        poll_collision_event(&server, metrics::COLLISION_DETECTED_COUNT).await;
 
         if dialed_wins {
             // Candidate's OPEN loses; dropped silently. DelayOpen expires and
@@ -617,9 +632,15 @@ async fn test_collision_delay_open() {
             // Dialed connection dies during DelayOpen; candidate is promoted
             // with DelayOpen restarted. Its OPEN gets OPEN + KEEPALIVE back.
             drop(peer.stream.take());
-            // Let the server notice the death so promotion (not the
-            // accepted-wins path) is what gets exercised.
-            sleep(Duration::from_millis(300)).await;
+            // Promotion runs connection_ready on the candidate, emitting the
+            // accepted-connection metric: the only way one appears here.
+            assert_metric(
+                &server,
+                metrics::TCP_CONNECTION_COUNT,
+                &[("Peer", "127.0.0.3"), ("Direction", "Accepted")],
+                &[],
+            )
+            .await;
             candidate
                 .send_open(65002, Ipv4Addr::new(3, 3, 3, 3), 300)
                 .await;

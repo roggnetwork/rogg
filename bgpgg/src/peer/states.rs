@@ -64,8 +64,7 @@ impl Peer {
                                             // RFC 4271 6.8: resolve the collision on the
                                             // first OPEN from the peer.
                                             if self.local_wins_collision(open) {
-                                                info!(peer_ip = %peer_ip, "collision: dialed connection wins, dropping accepted connection");
-                                                self.conn_pending = None;
+                                                self.resolve_collision_dialed_wins();
                                             } else {
                                                 // The OPEN arrived on the losing connection; discard it.
                                                 self.adopt_pending_after_collision_loss(None).await;
@@ -278,6 +277,7 @@ impl Peer {
                 // RFC 4271 6.8: hold as the collision candidate; the peer's
                 // first OPEN resolves it.
                 debug!(peer_ip = %self.addr, "collision: holding accepted connection");
+                self.collision_event(metrics::COLLISION_DETECTED_COUNT);
                 self.conn_pending = Some(TcpConnection::new(tcp_tx, tcp_rx));
                 false
             }
@@ -312,6 +312,25 @@ impl Peer {
                 true
             }
         }
+    }
+
+    /// Emit a collision handling metric (RFC 4271 6.8).
+    fn collision_event(&self, name: &str) {
+        metric(
+            name,
+            1,
+            Unit::Count,
+            &[("Peer", &self.addr)],
+            &[&["Peer"]],
+            &[],
+        );
+    }
+
+    /// The dialed connection won the collision: drop the candidate silently.
+    pub(super) fn resolve_collision_dialed_wins(&mut self) {
+        info!(peer_ip = %self.addr, "collision: dialed connection wins, dropping accepted connection");
+        self.collision_event(metrics::COLLISION_DIALED_WINS_COUNT);
+        self.conn_pending = None;
     }
 
     /// Make the pending accepted connection the primary. Returns false if
@@ -352,6 +371,7 @@ impl Peer {
     /// it); None when it arrived on the losing dialed connection (discarded).
     pub(super) async fn adopt_pending_after_collision_loss(&mut self, open: Option<OpenMessage>) {
         info!(peer_ip = %self.addr, "collision: accepted connection wins, closing dialed connection");
+        self.collision_event(metrics::COLLISION_ACCEPTED_WINS_COUNT);
         let delay_open = self.fsm.timers.delay_open_timer_running();
         if !delay_open {
             // An OPEN went out on the dialed connection; close it with Cease.
@@ -403,8 +423,7 @@ impl Peer {
             Some(Ok(bytes)) => match Self::parse_bgp_message(&bytes, PRE_OPEN_FORMAT) {
                 Ok(BgpMessage::Open(open)) => {
                     if self.local_wins_collision(&open) {
-                        info!(peer_ip = %self.addr, "collision: dialed connection wins, dropping accepted connection");
-                        self.conn_pending = None;
+                        self.resolve_collision_dialed_wins();
                     } else {
                         self.adopt_pending_after_collision_loss(Some(open)).await;
                     }
@@ -435,6 +454,19 @@ impl Peer {
     /// A TCP connection is in place (accepted, dialed, or attached at spawn):
     /// stop ConnectRetryTimer, then start DelayOpen or send OPEN.
     pub(super) async fn connection_ready(&mut self) {
+        let direction = if self.conn_dialed {
+            "Dialed"
+        } else {
+            "Accepted"
+        };
+        metric(
+            metrics::TCP_CONNECTION_COUNT,
+            1,
+            Unit::Count,
+            &[("Peer", &self.addr), ("Direction", &direction)],
+            &[&["Peer"], &["Direction"], &["Peer", "Direction"]],
+            &[],
+        );
         self.fsm.timers.stop_connect_retry();
         if self.config.delay_open_time_secs.is_some() {
             self.fsm.timers.start_delay_open_timer();
