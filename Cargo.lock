@@ -281,7 +281,7 @@ dependencies = [
 
 [[package]]
 name = "bgpgg"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "clap",
  "conf",
@@ -511,7 +511,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "conf"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1072,7 +1072,7 @@ dependencies = [
 
 [[package]]
 name = "ggsh"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "bgpgg",
  "conf",
@@ -1573,7 +1573,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "loadtests"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "bgpgg",
  "conf",
@@ -2756,7 +2756,7 @@ checksum = "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263"
 
 [[package]]
 name = "telemetry"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "chrono",
  "http-body-util",
