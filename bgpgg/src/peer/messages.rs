@@ -128,7 +128,7 @@ fn build_optional_params(
 ///
 /// RFC 5492: capabilities may arrive packed in one Optional Parameter or
 /// split across multiple. Both forms must be processed identically.
-fn extract_capabilities(open_msg: &OpenMessage) -> PeerCapabilities {
+pub(super) fn extract_capabilities(open_msg: &OpenMessage) -> PeerCapabilities {
     let mut capabilities = PeerCapabilities::default();
 
     for cap in open_msg

@@ -941,14 +941,20 @@ impl Peer {
     pub(super) async fn process_delay_open(&mut self, open: OpenMessage) {
         debug!(peer_ip = %self.addr, "OPEN received while DelayOpen running");
         self.fsm.timers.stop_delay_open_timer();
+        // Mirror the normal OPEN path (handle_message): store the peer's BGP
+        // Router ID and negotiate capabilities from the received OPEN.
+        self.bgp_id = Some(std::net::Ipv4Addr::from(open.bgp_identifier.to_be_bytes()));
+        let peer_capabilities = messages::extract_capabilities(&open);
         let event = FsmEvent::BgpOpenWithDelayOpenTimer(BgpOpenParams {
             peer_asn: open.asn,
             peer_hold_time: open.hold_time,
             local_asn: self.local_config.asn,
             local_hold_time: self.local_config.hold_time,
-            peer_capabilities: PeerCapabilities::default(),
+            peer_capabilities,
             peer_bgp_id: open.bgp_identifier,
         });
+        // Store received OPEN for BMP PeerUp.
+        self.received_open = Some(open);
         if let Err(e) = self.process_event(&event).await {
             error!(peer_ip = %self.addr, error = %e, "failed to send response to OPEN");
             self.disconnect(true, PeerDownReason::LocalNoNotification(event));
