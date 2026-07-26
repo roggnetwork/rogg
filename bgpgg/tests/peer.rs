@@ -19,6 +19,7 @@ pub use utils::*;
 
 use bgpgg::bgp::community;
 use bgpgg::bgp::msg_notification::{BgpError, OpenMessageError};
+use bgpgg::bgp::msg_update_types::AS_TRANS;
 use bgpgg::grpc::proto::{
     AdminState, Afi, BgpState, GracefulRestartConfig, ListRoutesRequest, Origin, Peer, ResetType,
     Safi, SessionConfig,
@@ -749,6 +750,101 @@ async fn test_delay_open() {
         start.elapsed().as_secs() >= delay_secs,
         "OPEN sent before delay_open_time elapsed"
     );
+}
+
+/// A session established while the DelayOpen timer runs must negotiate the
+/// peer's capabilities and record its identity. Regression: process_delay_open
+/// used PeerCapabilities::default() and skipped received_open/bgp_id, so such a
+/// session negotiated no 4-byte ASN and silently dropped every route from the
+/// peer (bgp_id None).
+#[tokio::test]
+async fn test_delay_open_negotiates_capabilities() {
+    let server = start_test_server(BgpConfig::new(
+        65001,
+        "127.0.0.1:0",
+        Ipv4Addr::new(1, 1, 1, 1),
+        90,
+    ))
+    .await;
+
+    let peer_asn = 4200000002u32; // 4-byte ASN (dn42-style)
+    let peer_router_id = Ipv4Addr::new(2, 2, 2, 2);
+
+    let mut fake = FakePeer::new("127.0.0.2:0", peer_asn).await;
+    let port = fake.port();
+
+    // Server dials the peer with DelayOpen set, so it withholds its OPEN.
+    server
+        .client
+        .add_peer(
+            "127.0.0.2".to_string(),
+            Some(SessionConfig {
+                port: Some(port as u32),
+                delay_open_time_secs: Some(3),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+
+    // eBGP peer -> needs explicit accept-all policy (RFC 8212)
+    apply_permit_all(&server, "127.0.0.2").await;
+
+    fake.accept().await;
+
+    // Peer sends OPEN first, while the server's DelayOpen timer runs,
+    // advertising multiprotocol + 4-byte ASN.
+    let open = build_raw_open(
+        AS_TRANS,
+        90,
+        u32::from(peer_router_id),
+        RawOpenOptions {
+            capabilities: Some(vec![
+                build_multiprotocol_capability_ipv4_unicast(),
+                build_capability_4byte_asn(peer_asn),
+            ]),
+            ..Default::default()
+        },
+    );
+    fake.send_raw(&open).await;
+    fake.supports_4byte_asn = true;
+
+    // Server responds (BgpOpenWithDelayOpenTimer): OPEN then KEEPALIVE.
+    fake.read_open().await;
+    fake.send_keepalive().await;
+    fake.read_keepalive().await;
+
+    poll_peer_established(&server, "127.0.0.2").await;
+
+    // Peer announces a route with a 4-byte ASN in AS_PATH. Decoding it requires
+    // the 4-byte ASN capability, and the route only lands in the RIB if bgp_id
+    // was recorded.
+    fake.send_raw(&build_raw_update(
+        &[],
+        &[
+            &attr_origin_igp(),
+            &attr_as_path_4byte(vec![peer_asn]),
+            &attr_next_hop(Ipv4Addr::new(192, 168, 1, 1)),
+        ],
+        &[24, 10, 0, 0], // 10.0.0.0/24
+        None,
+    ))
+    .await;
+
+    poll_rib(&[(
+        &server,
+        vec![expected_route(
+            "10.0.0.0/24",
+            PathParams {
+                as_path: vec![as_sequence(vec![peer_asn])],
+                next_hop: "192.168.1.1".to_string(),
+                peer_address: "127.0.0.2".to_string(),
+                local_pref: Some(100),
+                ..Default::default()
+            },
+        )],
+    )])
+    .await;
 }
 
 /// Test MRAI (RFC 4271 9.2.1.1) per-peer rate limiting
