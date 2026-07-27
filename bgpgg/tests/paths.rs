@@ -1863,3 +1863,54 @@ async fn test_best_path_selection() {
         .await;
     }
 }
+
+#[tokio::test]
+async fn test_large_community_set_over_255_bytes_readvertises() {
+    // 30 large communities = 360 bytes, needs EXTENDED_LENGTH. S2 re-advertises
+    // S1's route to S3; without the flag the length truncates and S3 resets.
+    let [server1, server2, server3] = &mut create_asn_chain([65001, 65002, 65003], None).await;
+
+    let large_communities: Vec<LargeCommunity> = (0..30)
+        .map(|i| LargeCommunity::new(i, i * 2, i * 3))
+        .collect();
+
+    announce_route(
+        server1,
+        RouteParams::Ip(Box::new(IpRouteParams {
+            prefix: "10.0.0.0/24".to_string(),
+            next_hop: "192.168.1.1".to_string(),
+            large_communities: large_communities.clone(),
+            ..Default::default()
+        })),
+    )
+    .await;
+
+    let expected_large_comms: Vec<proto::LargeCommunity> = large_communities
+        .iter()
+        .map(|lc| proto::LargeCommunity {
+            global_admin: lc.global_admin,
+            local_data_1: lc.local_data_1,
+            local_data_2: lc.local_data_2,
+        })
+        .collect();
+
+    // S3 learns the route with the full large-community set intact.
+    poll_rib(&[(
+        server3,
+        vec![expected_route(
+            "10.0.0.0/24",
+            PathParams {
+                as_path: vec![as_sequence(vec![65002, 65001])],
+                next_hop: server2.address.to_string(),
+                peer_address: server2.address.to_string(),
+                local_pref: Some(100),
+                large_communities: expected_large_comms,
+                ..Default::default()
+            },
+        )],
+    )])
+    .await;
+
+    // Session survived -- no reset from a misparsed UPDATE.
+    assert!(verify_peers(server3, vec![server2.to_peer(BgpState::Established)]).await);
+}

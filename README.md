@@ -1,6 +1,16 @@
 # rogg
 
-A memory-safe, fast, programmable routing stack written in Rust. Currently implements BGP (bgpgg).
+A memory-safe, fast, observable routing stack written in Rust. It runs [AS4242423930](https://dn42.roggnetwork.com/) on dn42.
+
+* **bgpgg** - BGP (Border Gateway Protocol) daemon
+* **ggsh** - "gg shell" for managing rogg
+
+## Features
+
+- **Observable.** Native metrics as CloudWatch EMF, JSON, or Prometheus. No sidecar needed.
+- **Programmable.** A gRPC API for peers, routes, and policy.
+- **Memory-safe.** Written in Rust.
+- **Operable.** ggsh shows and configures state, with commit and rollback.
 
 ## Get Started
 
@@ -24,6 +34,16 @@ service bgp {
     remote-as 65001
     port 17900
   }
+
+  telemetry {
+    cloudwatch-emf {
+      namespace Rogg/Bgpgg
+    }
+    prometheus {
+      listen 0.0.0.0:9273
+    }
+    json {}
+  }
 }
 ```
 
@@ -33,7 +53,7 @@ Start the daemon:
 ./bgpggd --config rogg.conf
 ```
 
-Use **ggsh** (the gg shell) to manage it:
+Use **ggsh** to manage it:
 
 ```
 $ ggsh
@@ -54,7 +74,9 @@ ggsh> exit
 
 For scripting: `ggsh show bgp summary`
 
-## Build from Source
+### Other Ways
+
+Build from source:
 
 ```bash
 make
@@ -62,10 +84,18 @@ make
 ./target/release/ggsh
 ```
 
-## Docker
+Or use Docker:
 
 ```bash
 curl -LO https://raw.githubusercontent.com/roggnetwork/rogg/master/bgpgg/docker/docker-compose.yml
 docker compose up -d
 docker exec rogg1 ggsh show bgp summary
 ```
+
+## Docs
+
+https://www.roggnetwork.com/doc
+
+## License
+
+Apache 2.0.

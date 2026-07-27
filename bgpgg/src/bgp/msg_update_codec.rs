@@ -1281,10 +1281,17 @@ pub(super) fn write_path_attribute(attr: &PathAttribute, use_4byte_asn: bool) ->
         PathAttrValue::Unknown { data, .. } => data.clone(),
     };
 
-    // Write flags (Unknown stores its own flags)
-    let flags = match &attr.value {
+    // Set EXTENDED_LENGTH when the value exceeds 255 bytes (Unknown keeps its own flags).
+    let base_flags = match &attr.value {
         PathAttrValue::Unknown { flags, .. } => *flags,
         _ => attr.flags.0,
+    };
+    let extended_len =
+        attr_value_bytes.len() > 255 || base_flags & PathAttrFlag::EXTENDED_LENGTH != 0;
+    let flags = if extended_len {
+        base_flags | PathAttrFlag::EXTENDED_LENGTH
+    } else {
+        base_flags
     };
     bytes.push(flags);
 
@@ -1311,9 +1318,8 @@ pub(super) fn write_path_attribute(attr: &PathAttribute, use_4byte_asn: bool) ->
     };
     bytes.push(attr_type);
 
-    // Write length (use extended_len from Unknown's flags if applicable)
+    // Write length
     let attr_len = attr_value_bytes.len();
-    let extended_len = flags & PathAttrFlag::EXTENDED_LENGTH != 0;
     if extended_len {
         bytes.extend_from_slice(&(attr_len as u16).to_be_bytes());
     } else {
@@ -2012,6 +2018,33 @@ mod tests {
         let (result, _) = read_path_attribute(&bytes, DEFAULT_FORMAT).unwrap();
         let parsed_attr = result.unwrap();
 
+        if let PathAttrValue::LargeCommunities(large_communities) = parsed_attr.value {
+            assert_eq!(large_communities, original_large_communities);
+        } else {
+            panic!("Expected LargeCommunities attribute after roundtrip");
+        }
+    }
+
+    #[test]
+    fn test_large_attribute_sets_extended_length() {
+        // 30 large communities = 360 bytes. Encoder must set EXTENDED_LENGTH
+        // even though the caller's flags don't, or the length truncates.
+        let original_large_communities: Vec<LargeCommunity> = (0..30)
+            .map(|i| LargeCommunity::new(i, i * 2, i * 3))
+            .collect();
+        let attr = PathAttribute {
+            flags: PathAttrFlag(PathAttrFlag::OPTIONAL | PathAttrFlag::TRANSITIVE),
+            value: PathAttrValue::LargeCommunities(original_large_communities.clone()),
+        };
+
+        let bytes = write_path_attribute(&attr, false);
+
+        // Flag byte must carry EXTENDED_LENGTH, length must be the real 2-byte value.
+        assert_ne!(bytes[0] & PathAttrFlag::EXTENDED_LENGTH, 0);
+        assert_eq!(u16::from_be_bytes([bytes[2], bytes[3]]), 360);
+
+        let (result, _) = read_path_attribute(&bytes, DEFAULT_FORMAT).unwrap();
+        let parsed_attr = result.unwrap();
         if let PathAttrValue::LargeCommunities(large_communities) = parsed_attr.value {
             assert_eq!(large_communities, original_large_communities);
         } else {
